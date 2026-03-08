@@ -38,6 +38,37 @@ from visualize import (make_single_fig_a, make_single_fig_b, make_single_fig_c,
                        make_single_schematic)
 
 st.set_page_config(page_title="Gap Simulator", page_icon="❄️", layout="wide")
+
+# ═══════════════════════════════════════════════════════════
+#  비밀번호 보호
+# ═══════════════════════════════════════════════════════════
+import hmac
+
+def check_password():
+    def password_entered():
+        try:
+            correct = st.secrets["password"]
+        except Exception:
+            correct = "gap1234"  # 로컬 실행 시 기본 비밀번호
+        if hmac.compare_digest(st.session_state["password"], correct):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.title("❄️ 증발기-응축기 간격 통합 시뮬레이터")
+    st.text_input("🔒 비밀번호를 입력하세요", type="password",
+                   on_change=password_entered, key="password")
+    if "password_correct" in st.session_state:
+        st.error("비밀번호가 틀렸습니다")
+    return False
+
+if not check_password():
+    st.stop()
+
 st.title("❄️ 증발기-응축기 간격 통합 시뮬레이터")
 
 # ═══════════════════════════════════════════════════════════
