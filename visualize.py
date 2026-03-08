@@ -670,7 +670,7 @@ def make_single_fig_a(gaps, results, gp, ref, tag):
 
     fig.suptitle(f"Module A — Cooling Performance vs Gap\n{tag}",
                  fontsize=14, color=DARK["text"], fontweight='bold', y=0.97)
-    fig.savefig("module_a.png", dpi=150, bbox_inches='tight', facecolor=DARK["bg"])
+    fig.savefig("module_a.png", dpi=200, bbox_inches='tight', facecolor=DARK["bg"])
     print("    → module_a.png")
     return fig
 
@@ -817,7 +817,7 @@ def make_single_fig_b(gaps, result_b, viz_b, tag):
 
     fig.suptitle(f"Module B — Carryover Risk vs Gap\n{tag}",
                  fontsize=14, color=DARK["text"], fontweight='bold', y=0.97)
-    fig.savefig("module_b.png", dpi=150, bbox_inches='tight', facecolor=DARK["bg"])
+    fig.savefig("module_b.png", dpi=200, bbox_inches='tight', facecolor=DARK["bg"])
     print("    → module_b.png")
     return fig
 
@@ -950,7 +950,7 @@ def make_single_fig_c(gaps, rc, inlet, tag):
 
     fig.suptitle(f"Module C — Pressure Drop vs Gap\n{tag}",
                  fontsize=14, color=DARK["text"], fontweight='bold', y=0.97)
-    fig.savefig("module_c.png", dpi=150, bbox_inches='tight', facecolor=DARK["bg"])
+    fig.savefig("module_c.png", dpi=200, bbox_inches='tight', facecolor=DARK["bg"])
     print("    → module_c.png")
     return fig
 
@@ -1138,6 +1138,6 @@ def make_single_schematic(evap_spec, cond_spec, evap_geo, cond_geo,
     fig.suptitle(f'Gap 물리 현상도  |  {tag}  |  G = {gap_mm:.0f}mm',
                  fontsize=13, color=DARK["text"], fontweight='bold', y=0.98)
 
-    fig.savefig("gap_schematic.png", dpi=150, bbox_inches='tight', facecolor=DARK["bg"])
+    fig.savefig("gap_schematic.png", dpi=200, bbox_inches='tight', facecolor=DARK["bg"])
     print("    → gap_schematic.png")
     return fig

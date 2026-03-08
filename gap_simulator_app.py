@@ -21,6 +21,8 @@ for _p in ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         break
 matplotlib.rcParams['axes.unicode_minus'] = False
 matplotlib.rcParams['mathtext.fontset'] = 'cm'
+matplotlib.rcParams['figure.dpi'] = 200
+matplotlib.rcParams['savefig.dpi'] = 200
 
 from common import (
     FinTubeSpec, MCHXSpec, RefrigerantState, DARK, C,
@@ -438,19 +440,27 @@ if 'results' in st.session_state and st.session_state.results:
     c5.metric("Risk",('SAFE' if fl50<FLUX_CAUTION else 'CAUTION' if fl50<FLUX_DANGER else 'DANGER' if fl50<FLUX_SEVERE else 'SEVERE'))
     st.caption(f"**{tag}** | V={res['V_face']:.2f}m/s | UA_e={res['ua_e']['UA']:.1f}W/K | η_o={res['ua_e']['eta_o']:.3f}")
 
+    # 고화질 렌더링 함수
+    def show_fig(fig, dpi=200):
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight', facecolor=fig.get_facecolor())
+        buf.seek(0)
+        st.image(buf, use_container_width=True)
+        plt.close(fig)
+
     ta,tb,tc,ts,tcmp,td=st.tabs(["🌡️ A 냉방","💧 B 비말","📊 C 압강","🖼️ 개략도","📈 비교","📋 데이터"])
     with ta:
-        f=make_single_fig_a(gaps,res['results_a'],res['gp'],res['ref'],tag); st.pyplot(f); plt.close(f)
+        f=make_single_fig_a(gaps,res['results_a'],res['gp'],res['ref'],tag); show_fig(f)
     with tb:
-        f=make_single_fig_b(gaps,res['result_b'],res['viz_b'],tag); st.pyplot(f); plt.close(f)
+        f=make_single_fig_b(gaps,res['result_b'],res['viz_b'],tag); show_fig(f)
     with tc:
-        f=make_single_fig_c(gaps,res['result_c'],res['inlet'],tag); st.pyplot(f); plt.close(f)
+        f=make_single_fig_c(gaps,res['result_c'],res['inlet'],tag); show_fig(f)
     with ts:
         gi=20 if 20<=gaps[-1] else gaps[len(gaps)//2]; ii=np.argmin(np.abs(gaps-gi))
         f=make_single_schematic(res['evap'],res['cond'],res['geo_e'],res['geo_c'],
             res['ua_e'],res['ua_c'],res['gp'],res['ref'],res['results_a'][ii],res['viz_b'],tag)
         if f:
-            st.pyplot(f); plt.close(f)
+            show_fig(f)
         elif os.path.exists("gap_schematic.png"):
             st.image("gap_schematic.png",use_container_width=True)
     with tcmp:
