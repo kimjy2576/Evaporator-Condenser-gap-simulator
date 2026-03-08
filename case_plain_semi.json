@@ -1,0 +1,8 @@
+{
+  "label": "Plain / semi / CMM=13.5",
+  "evap": {"fpi": 14, "fin_type": "plain", "tube_layout": "staggered"},
+  "cond": {"fpi": 14, "fin_type": "plain"},
+  "ref": {"refrigerant": "R410A", "T_sat_evap": 5.0, "T_sat_cond": 45.0},
+  "gap": {"T_amb": 27.0, "RH_in": 0.70, "CMM": 13.5, "gap_mode": "semi", "seal_fraction": 0.7},
+  "sim": {"gap_min": 5, "gap_max": 100, "gap_points": 25}
+}

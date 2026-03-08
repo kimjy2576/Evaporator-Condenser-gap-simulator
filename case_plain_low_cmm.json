@@ -1,0 +1,7 @@
+{
+  "label": "Plain / semi / CMM=6.75",
+  "evap": {"fpi": 14, "fin_type": "plain", "tube_layout": "staggered"},
+  "cond": {"fpi": 14, "fin_type": "plain"},
+  "gap": {"T_amb": 27.0, "RH_in": 0.70, "CMM": 6.75, "gap_mode": "semi", "seal_fraction": 0.7},
+  "sim": {"gap_min": 5, "gap_max": 100, "gap_points": 25}
+}

@@ -1,0 +1,26 @@
+{
+  "evap": {
+    "W": 0.30, "H": 0.25, "D": 0.045,
+    "fin_pitch": 1.8, "fin_thickness": 0.10, "fin_height": 25.4,
+    "tube_do": 9.52, "tube_di": 8.52, "tube_rows": 2, "tube_cols": 8,
+    "tube_pitch_t": 25.4, "tube_pitch_l": 22.0,
+    "fin_type": "louvered", "corr_mode": "etype", "tube_layout": "staggered",
+    "ft_louver_pitch": 1.7, "ft_louver_angle": 28.0,
+    "fin_material": "Al", "tube_material": "Cu", "h_drain": 25.0
+  },
+  "cond": {
+    "W": 0.35, "H": 0.28, "D": 0.050,
+    "fin_pitch": 1.5, "fin_thickness": 0.10, "fin_height": 25.4,
+    "tube_do": 9.52, "tube_di": 8.52, "tube_rows": 2, "tube_cols": 9,
+    "tube_pitch_t": 25.4, "tube_pitch_l": 22.0,
+    "fin_type": "plain", "corr_mode": "etype", "tube_layout": "staggered",
+    "fin_material": "Al", "tube_material": "Cu", "h_drain": 25.0
+  },
+  "ref": { "refrigerant": "R410A", "T_sat_evap": 5.0, "T_sat_cond": 45.0 },
+  "gap": {
+    "T_amb": 27.0, "RH_in": 0.80, "CMM": 6.75,
+    "gap_mode": "sealed", "seal_fraction": 0.7,
+    "mode": "forced", "frame_material": "Al", "A_frame": 4.0
+  },
+  "sim": { "gap_min": 5, "gap_max": 80, "gap_points": 30 }
+}
