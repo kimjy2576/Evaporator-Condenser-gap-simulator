@@ -590,18 +590,19 @@ def gnielinski_htc(Re, Pr, k, D):
     return Nu * k / D
 
 
-def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None):
+def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None,
+                         evap_corr='gungor_winterton'):
     """건도(x) 기반 냉매 HTC 자동 분기
 
     x < 0:    과냉 액체 → Gnielinski(liquid)
-    0 ≤ x ≤ 1: 이상 영역 → Shah(1982) evap / Shah(1979) cond
+    0 ≤ x ≤ 1: 이상 영역 → 선택된 상관식
     x > 1:    과열 증기 → Gnielinski(vapor)
     전이구간: 블렌딩
 
-    Shah(1982) — 정석 구현:
-      h_tp = ψ × h_lo
-      h_lo = Dittus-Boelter with Re_lo = G×D/μ_l (total mass flux)
-      ψ = f(Co, Bo, Fr_l) — 3-regime chart correlation
+    evap_corr: 'shah' | 'gungor_winterton' (default)
+      shah            — Shah(1982) chart correlation, h_lo 기준
+      gungor_winterton — Gungor & Winterton(1986), E×h_l + S×h_pool
+                         x>0.8에서 안정적, 수평 소구경 보정 포함
     """
     rf = ref.refrigerant
     if hasattr(spec, 'tube_di'):
@@ -643,66 +644,77 @@ def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None):
     Pr_l = ref.Pr_l_evap if side == 'evap' else CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
     rho_l = ref.rho_l_evap if side == 'evap' else CP.PropsSI('D','T',T_sat_K,'Q',0,rf)
     rho_v = ref.rho_v_evap if side == 'evap' else CP.PropsSI('D','T',T_sat_K,'Q',1,rf)
+    mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
 
-    # h_lo: 전체 유량이 액체일 때 (Shah 기준)
+    # h_lo, h_l (공통)
     Re_lo = G_ref * D / mu_l
     h_lo = 0.023 * max(Re_lo, 2300)**0.8 * Pr_l**0.4 * k_l / D
+    Re_l = max(G_ref * (1 - x_clip) * D / mu_l, 100)
+    h_l  = 0.023 * max(Re_l, 2300)**0.8 * Pr_l**0.4 * k_l / D
+
+    # Bo (세그먼트 열유속 기반)
+    Nr = max(getattr(spec, 'tube_rows', 2), 1)
+    Nt = max(getattr(spec, 'tube_cols', 1), 1)
+    A_i_seg = geo['A_i'] / (Nr * Nt * 10)
+    q_flux = max((Q_seg or 15.0) / (A_i_seg + 1e-9), 100.0)
+    Bo = q_flux / (G_ref * h_fg)
+
+    # Froude (수평 튜브)
+    Fr_l = G_ref**2 / (rho_l**2 * 9.81 * D)
 
     if side == 'evap':
-        # ── Shah (1982) 증발 — Chart Correlation ──
-        # Convection number
-        Co = ((1-x_clip)/x_clip)**0.8 * (rho_v/rho_l)**0.5
-
-        # Boiling number — 정석: q'' / (G × h_fg)
-        Nr = max(getattr(spec, 'tube_rows', 2), 1)
-        Nt = max(getattr(spec, 'tube_cols', 1), 1)
-        N_seg = 10  # 기본 세그먼트 수
-        A_i_seg = geo['A_i'] / (Nr * Nt * N_seg)
-        q_flux = max((Q_seg or 15.0) / (A_i_seg + 1e-9), 100.0)
-        Bo = q_flux / (G_ref * h_fg)
-
-        # Froude number (수평 튜브)
-        Fr_l = G_ref**2 / (rho_l**2 * 9.81 * D)
-
-        # N parameter (Shah 1982)
-        if Fr_l >= 0.04:
-            N = Co
-        else:
-            N = Co * 0.38 * Fr_l**(-0.3)
-
-        # ψ (Chart correlation, Shah 1982 Table 2)
-        # Regime: CB (convective boiling) vs NB (nucleate boiling)
-        psi_cb = 1.8 / max(N, 0.01)**0.8
-
-        if N > 1.0:
-            # Nucleate boiling dominant regime
-            if Bo > 0.3e-4:
-                psi_nb = 230 * Bo**0.5
+        if evap_corr == 'shah':
+            # ── Shah (1982) Chart Correlation ──
+            Co = ((1-x_clip)/x_clip)**0.8 * (rho_v/rho_l)**0.5
+            N = Co if Fr_l >= 0.04 else Co * 0.38 * Fr_l**(-0.3)
+            psi_cb = 1.8 / max(N, 0.01)**0.8
+            if N > 1.0:
+                psi_nb = 230*Bo**0.5 if Bo > 0.3e-4 else 1+46*Bo**0.5
+                psi = max(psi_nb, psi_cb)
             else:
-                psi_nb = 1.0 + 46 * Bo**0.5
-            psi = max(psi_nb, psi_cb)
-        else:
-            # Convective boiling dominant regime (N ≤ 1.0)
-            if 0.1 < N <= 1.0:
-                F_s = 14.7 if Bo >= 11e-4 else 15.43
-                psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.1))
-            else:  # N ≤ 0.1
-                F_s = 14.7 if Bo >= 11e-4 else 15.43
-                psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.15))
-            psi = max(psi_cb, psi_bs)
+                if 0.1 < N <= 1.0:
+                    F_s = 14.7 if Bo >= 11e-4 else 15.43
+                    psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.1))
+                else:
+                    F_s = 14.7 if Bo >= 11e-4 else 15.43
+                    psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.15))
+                psi = max(psi_cb, psi_bs)
+            h_2ph = h_lo * psi
 
-        h_2ph = h_lo * psi
+        else:
+            # ── Gungor & Winterton (1986) ──
+            # h_tp = E × h_l + S × h_pool
+            # Ref: IJHMT 29(3):351-358
+
+            # Martinelli parameter
+            Xtt = ((1-x_clip)/x_clip)**0.9 * (rho_v/rho_l)**0.5 * (mu_l/mu_v)**0.1
+
+            # Enhancement factor E
+            E = 1 + 24000 * Bo**1.16 + 1.37 * (1/max(Xtt, 0.001))**0.86
+
+            # Suppression factor S
+            S = 1 / (1 + 1.15e-6 * E**2 * max(Re_l, 100)**1.17)
+
+            # Pool boiling — Cooper (1984)
+            P_r = P_sat / CP.PropsSI('Pcrit', rf)
+            M = CP.PropsSI('M', rf) * 1000  # kg/mol → g/mol
+            h_pool = 55 * P_r**0.12 * max(-np.log10(P_r), 0.01)**(-0.55) \
+                     * M**(-0.5) * max(q_flux, 100)**0.67
+
+            # 수평 튜브 보정 (Gungor-Winterton 1987 update)
+            if Fr_l < 0.05:
+                E *= Fr_l**(0.1 - 2*Fr_l)
+                S *= np.sqrt(Fr_l)
+
+            h_2ph = E * h_l + S * h_pool
 
     else:
         # ── Shah (1979) 응축 ──
-        Re_lo = G_ref * D / mu_l
-        h_lo = 0.023 * max(Re_lo, 2300)**0.8 * Pr_l**0.4 * k_l / D
         Z = (1/x_clip - 1)**0.8 * (P_sat / CP.PropsSI('Pcrit', rf))**0.4
         h_2ph = h_lo * (1 + 3.8 / max(Z, 0.01)**0.95)
 
     # ── 전이 블렌딩 (x = 0.90~1.05) ──
     if 0.90 < x <= 1.05:
-        mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
         k_v  = CP.PropsSI('L','T',T_sat_K,'Q',1,rf)
         Pr_v = CP.PropsSI('Prandtl','T',T_sat_K,'Q',1,rf)
         h_vapor = gnielinski_htc(G_ref*D/mu_v, Pr_v, k_v, D)
@@ -1423,8 +1435,10 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
 
 
 def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
-                    m_ref, x_in, side='evap', N_seg=10, flow='counter'):
-    """Level 2 Tube-Segment coil model. flow='counter' or 'parallel'."""
+                    m_ref, x_in, side='evap', N_seg=10, flow='counter',
+                    evap_corr='gungor_winterton'):
+    """Level 2 Tube-Segment coil model. flow='counter' or 'parallel'.
+    evap_corr='shah' or 'gungor_winterton' (default)."""
     Nr = getattr(spec, 'tube_rows', getattr(spec, 'n_slabs', 1))
     Nt = getattr(spec, 'tube_cols', 1)
     Nr = max(Nr, 1); Nt = max(Nt, 1)
@@ -1477,37 +1491,42 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
         def get_hsat(T): W=get_Wsat(T); return 1006*T+W*(2501000+1860*T)
 
     def calc_seg(T_air, W_air, RH_air, x_ref, T_ref, m_air):
-        """단일 세그먼트 — T_wall 반복 수렴 (Newton-Raphson식)
+        """단일 세그먼트 — T_wall + h_i 동시 반복 수렴
 
-        에너지 보존: Q_air(T_wall) = Q_ref = (T_wall - T_ref_base) × h_i × A_i
-        → T_wall을 찾아 Q_air = Q_ref 동시 만족
+        매 반복마다: Q_prev → h_i(Bo) → R_i → T_wall → Q_air → 수렴 체크
         """
-        Q_est = min(m_air*cp_air*max(abs(T_air-T_sat),0.1)*0.1, m_ref*h_fg*0.05)
-        h_i, phase = refrigerant_htc_auto(spec, geo, ref, side, x_ref, m_ref, max(Q_est,1.0))
+        T_ref_base = T_sat if (x_ref >= -0.05 and x_ref <= 1.0) else T_ref
 
-        # 냉매 기준 온도 (T_wall의 하한)
-        if phase in ('two_phase','transition') and x_ref <= 1.0:
-            T_ref_base = T_sat
-        else:
-            T_ref_base = T_ref
+        T_wall = (T_ref_base + T_air) / 2
+        Q_prev = m_air * cp_air * max(abs(T_air - T_ref_base), 0.1) * 0.2
+        alpha = 0.3
+        h_i = 1000.0; phase = 'two_phase'
+        T_o_conv = T_air; W_o_conv = W_air; is_wet_conv = False
 
-        R_i = 1.0 / (h_i * A_i_seg + 1e-9)
+        for _iter in range(20):
+            # h_i 업데이트 (현재 Q 기반 Bo)
+            h_i, phase = refrigerant_htc_auto(spec, geo, ref, side, x_ref, m_ref,
+                                              max(Q_prev, 0.1), evap_corr=evap_corr)
+            if phase in ('two_phase','transition') and x_ref <= 1.0:
+                T_ref_base = T_sat
+            else:
+                T_ref_base = T_ref
 
-        # ── 공기측 Q 계산 함수 (T_wall 의존) ──
-        def Q_air_func(Tw):
-            """주어진 T_wall에서 공기측 Q 계산"""
+            R_i = 1.0 / (h_i * A_i_seg + 1e-9)
+
+            # 공기측 Q (Q_air_func은 R_i를 closure에서 참조하므로 여기서 직접 계산)
             R_o_loc = 1.0/(eta_o*h_o*A_o_seg+1e-9)
             UA_loc = 1.0/(R_o_loc + R_wall_seg + R_i)
             NTU_loc = UA_loc/(m_air*cp_air+1e-9)
             eps_loc = 1.0-np.exp(-min(NTU_loc,7.0))
 
             T_dp_loc = get_Tdp(T_air, RH_air)
-            wet = (T_dp_loc > Tw) and (side == 'evap')
+            wet = (T_dp_loc > T_wall) and (side == 'evap')
 
             if wet:
                 h_a = get_h(T_air, RH_air)
-                h_sw = get_hsat(Tw); W_sw = get_Wsat(Tw)
-                T_mid = (T_air + Tw) / 2
+                h_sw = get_hsat(T_wall); W_sw = get_Wsat(T_wall)
+                T_mid = (T_air + T_wall) / 2
                 dWs = (get_Wsat(T_mid+0.5) - get_Wsat(T_mid)) / 0.5
                 b_loc = max(1.0 + h_fg_lat*dWs/cp_air, 1.0)
                 k_f = 230.0 if getattr(spec,'fin_material','Al')=='Al' else 386.0
@@ -1525,50 +1544,29 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
                 eps_w = 1.0-np.exp(-min(UA_w/(m_air*cp_air+1e-9),7.0))
                 Q_a = max(eps_w*m_air*(h_a - h_sw), 0.0)
                 W_o = max(W_air - eps_w*(W_air - W_sw), W_sw)
-                T_o = T_air - eps_w*(T_air - Tw)
+                T_o = T_air - eps_w*(T_air - T_wall)
             else:
-                if side == 'evap':
-                    dT = max(T_air - Tw, 0.0)
-                else:
-                    dT = max(Tw - T_air, 0.0)
+                dT = max(T_air-T_wall,0.0) if side=='evap' else max(T_wall-T_air,0.0)
                 Q_a = eps_loc*m_air*cp_air*dT
                 T_o = T_air-Q_a/(m_air*cp_air) if side=='evap' and Q_a>0 else \
                       T_air+Q_a/(m_air*cp_air) if side=='cond' and Q_a>0 else T_air
-                T_o = np.clip(T_o, -40, 120)
-                W_o = W_air; W_sw = get_Wsat(Tw) if Tw > -40 else 0
-            return Q_a, T_o, W_o, wet
+                T_o = np.clip(T_o, -40, 120); W_o = W_air
 
-        # ── T_wall 반복 수렴 (successive substitution + relaxation) ──
-        # 원리: Q_air(T_wall) = Q_ref = (T_wall - T_ref_base) / R_i
-        #   → T_wall = T_ref_base + Q_air(T_wall) × R_i
-        T_wall = (T_ref_base + T_air) / 2  # 초기값: 중간점
-        Q_converged = 0.0
-        T_o_conv = T_air; W_o_conv = W_air; is_wet_conv = False
-        alpha = 0.3  # 완화 계수 (0.3 = 보수적 수렴)
-
-        for _iter in range(20):
-            Q_a, T_o_a, W_o_a, wet_a = Q_air_func(T_wall)
-
-            # 목표 T_wall: T_ref_base + Q_air × R_i
+            # T_wall 업데이트
             T_wall_target = T_ref_base + Q_a * R_i
-            # T_wall 범위 제한
             T_wall_target = np.clip(T_wall_target, T_ref_base,
-                                    T_air if side == 'evap' else T_ref_base + 80)
+                                    T_air if side=='evap' else T_ref_base+80)
+            T_wall_new = alpha * T_wall_target + (1-alpha) * T_wall
 
-            # 완화 업데이트
-            T_wall_new = alpha * T_wall_target + (1 - alpha) * T_wall
+            converged = abs(T_wall_new - T_wall) < 0.05 and abs(Q_a - Q_prev) < 0.5
+            T_wall = T_wall_new
+            T_o_conv = T_o; W_o_conv = W_o; is_wet_conv = wet
+            Q_prev = Q_a
 
-            if abs(T_wall_new - T_wall) < 0.05:  # 0.05°C 이내 수렴
-                Q_converged = Q_a
-                T_o_conv = T_o_a; W_o_conv = W_o_a; is_wet_conv = wet_a
-                T_wall = T_wall_new
+            if converged or _iter == 19:
                 break
 
-            T_wall = T_wall_new
-            Q_converged = Q_a
-            T_o_conv = T_o_a; W_o_conv = W_o_a; is_wet_conv = wet_a
-
-        Q = Q_converged
+        Q = Q_prev
 
         # ── 냉매 상태 업데이트 ──
         x_n = x_ref; T_n = T_ref
