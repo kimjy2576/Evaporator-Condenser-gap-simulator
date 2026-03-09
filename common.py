@@ -1021,3 +1021,416 @@ def apply_style():
         "legend.facecolor": DARK["panel"], "legend.edgecolor": DARK["border"],
         "axes.titlepad": 8,
     })
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Level 1 코일 모델 — Row × Phase-zone 세그먼트
+# ═══════════════════════════════════════════════════════════════════
+
+def gnielinski_htc(Re, Pr, k, D):
+    """
+    Gnielinski (1976) 단상 HTC
+    Nu = (f/8)(Re-1000)Pr / [1 + 12.7√(f/8)(Pr^(2/3)-1)]
+    유효: 2300 < Re < 5e6, 0.5 < Pr < 2000
+    """
+    Re = max(Re, 2300)
+    f = (0.790 * np.log(Re) - 1.64)**(-2)
+    Nu = (f / 8) * (Re - 1000) * Pr / \
+         (1 + 12.7 * np.sqrt(f / 8) * (Pr**(2/3) - 1) + 1e-9)
+    Nu = max(Nu, 3.66)  # 층류 하한
+    return Nu * k / D
+
+
+def _ref_vapor_props(ref, T_vapor_K):
+    """과열 증기 물성 (CoolProp)"""
+    rf = ref.refrigerant
+    P = ref.P_evap
+    try:
+        mu = CP.PropsSI('V', 'T', T_vapor_K, 'P', P, rf)
+        k  = CP.PropsSI('L', 'T', T_vapor_K, 'P', P, rf)
+        Pr = CP.PropsSI('Prandtl', 'T', T_vapor_K, 'P', P, rf)
+        cp = CP.PropsSI('C', 'T', T_vapor_K, 'P', P, rf)
+        rho = CP.PropsSI('D', 'T', T_vapor_K, 'P', P, rf)
+    except Exception:
+        # fallback: 포화 증기 물성
+        Ts = ref.T_sat_evap + 273.15
+        mu = CP.PropsSI('V', 'T', Ts, 'Q', 1, rf)
+        k  = CP.PropsSI('L', 'T', Ts, 'Q', 1, rf)
+        Pr = CP.PropsSI('Prandtl', 'T', Ts, 'Q', 1, rf)
+        cp = CP.PropsSI('C', 'T', Ts, 'Q', 1, rf)
+        rho = CP.PropsSI('D', 'T', Ts, 'Q', 1, rf)
+    return dict(mu=mu, k=k, Pr=Pr, cp=cp, rho=rho)
+
+
+def _ref_liquid_props(ref, T_liquid_K):
+    """과냉 액체 물성 (CoolProp)"""
+    rf = ref.refrigerant
+    P = ref.P_cond
+    try:
+        mu = CP.PropsSI('V', 'T', T_liquid_K, 'P', P, rf)
+        k  = CP.PropsSI('L', 'T', T_liquid_K, 'P', P, rf)
+        Pr = CP.PropsSI('Prandtl', 'T', T_liquid_K, 'P', P, rf)
+        cp = CP.PropsSI('C', 'T', T_liquid_K, 'P', P, rf)
+        rho = CP.PropsSI('D', 'T', T_liquid_K, 'P', P, rf)
+    except Exception:
+        Ts = ref.T_sat_cond + 273.15
+        mu = CP.PropsSI('V', 'T', Ts, 'Q', 0, rf)
+        k  = CP.PropsSI('L', 'T', Ts, 'Q', 0, rf)
+        Pr = CP.PropsSI('Prandtl', 'T', Ts, 'Q', 0, rf)
+        cp = CP.PropsSI('C', 'T', Ts, 'Q', 0, rf)
+        rho = CP.PropsSI('D', 'T', Ts, 'Q', 0, rf)
+    return dict(mu=mu, k=k, Pr=Pr, cp=cp, rho=rho)
+
+
+def refrigerant_htc_v2(x, D_ch, G_ref, ref, side='evap', T_ref_K=None):
+    """
+    건도 기반 냉매 HTC — 상 영역 자동 분기 + 전이 블렌딩
+
+    x < 0:          과냉 → Gnielinski (액체)
+    0 ≤ x ≤ 0.95:   이상 → Shah (1982/1979)
+    0.95 < x < 1.05: 전이 → 블렌딩 (이상↔단상)
+    x ≥ 1.05:       과열 → Gnielinski (증기)
+
+    Returns: h_i [W/m²K], phase ('subcooled'/'two_phase'/'transition'/'superheated')
+    """
+    X_BLEND_LO = 0.95
+    X_BLEND_HI = 1.05
+
+    if side == 'evap':
+        T_sat = ref.T_sat_evap
+        P = ref.P_evap
+        h_fg = ref.h_fg_evap
+    else:
+        T_sat = ref.T_sat_cond
+        P = ref.P_cond
+        h_fg = ref.h_cond_v - ref.h_cond_l
+
+    T_sat_K = T_sat + 273.15
+
+    # ── 과냉 (x < 0) ──
+    if x < 0:
+        T_liq_K = T_ref_K if T_ref_K else T_sat_K - 5.0
+        props = _ref_liquid_props(ref, min(T_liq_K, T_sat_K - 0.5))
+        Re = G_ref * D_ch / props['mu']
+        h_i = gnielinski_htc(Re, props['Pr'], props['k'], D_ch)
+        return h_i, 'subcooled'
+
+    # ── 완전 과열 (x ≥ 1.05) ──
+    if x >= X_BLEND_HI:
+        if T_ref_K is None:
+            T_ref_K = T_sat_K + 10.0
+        T_ref_K = max(T_ref_K, T_sat_K + 1.0)
+        props = _ref_vapor_props(ref, T_ref_K)
+        Re = G_ref * D_ch / props['mu']
+        h_i = gnielinski_htc(Re, props['Pr'], props['k'], D_ch)
+        return h_i, 'superheated'
+
+    # ── 이상 (0 ≤ x ≤ 0.95) ──
+    x_2ph = min(x, 0.95)
+    x_2ph = max(x_2ph, 0.05)  # Shah 안정 범위
+
+    if side == 'evap':
+        # Shah (1982)
+        Re_l = max(G_ref * (1 - x_2ph) * D_ch / ref.mu_l_evap, 2300)
+        Nu_l = 0.023 * Re_l**0.8 * ref.Pr_l_evap**0.4
+        h_l = Nu_l * ref.k_l_evap / D_ch
+        Co = ((1 - x_2ph) / x_2ph)**0.8 * (ref.rho_v_evap / ref.rho_l_evap)**0.5
+        # Bo 추정: q''/(G×h_fg), q'' ≈ h_o_typ × ΔT_typ ≈ 100×20 = 2000 W/m²
+        Bo = max(2000.0 / (G_ref * h_fg + 1e-3), 1e-6)
+        if Co > 0.65:
+            psi = 1.8 / Co**0.8
+        else:
+            psi = max(1.8 / Co**0.8, 0.6683 * Co**(-0.2) + 1058 * Bo**0.7)
+        h_2ph = h_l * psi
+    else:
+        # Shah (1979)
+        Tc = T_sat_K
+        mu_l = CP.PropsSI('V', 'T', Tc, 'Q', 0, ref.refrigerant)
+        k_l = CP.PropsSI('L', 'T', Tc, 'Q', 0, ref.refrigerant)
+        Pr_l = CP.PropsSI('Prandtl', 'T', Tc, 'Q', 0, ref.refrigerant)
+        Re_l = G_ref * D_ch / mu_l
+        h_l = 0.023 * Re_l**0.8 * Pr_l**0.4 * k_l / D_ch
+        P_crit = CP.PropsSI('Pcrit', ref.refrigerant)
+        Z = (1 / x_2ph - 1)**0.8 * (P / P_crit)**0.4
+        h_2ph = h_l * (1 + 3.8 / (Z**0.95 + 1e-9))
+
+    if x <= X_BLEND_LO:
+        return h_2ph, 'two_phase'
+
+    # ── 전이 구간 (0.95 < x < 1.05) → 블렌딩 ──
+    T_sh_K = T_sat_K + 2.0  # 전이 구간 약간의 과열
+    props = _ref_vapor_props(ref, T_sh_K)
+    Re_v = G_ref * D_ch / props['mu']
+    h_vapor = gnielinski_htc(Re_v, props['Pr'], props['k'], D_ch)
+
+    w = (x - X_BLEND_LO) / (X_BLEND_HI - X_BLEND_LO)
+    w = max(0, min(1, w))
+    h_i = (1 - w) * h_2ph + w * h_vapor
+    return h_i, 'transition'
+
+
+def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
+                    m_ref, x_in, side='evap'):
+    """
+    Level 1 코일 모델 — Row × Phase-zone 세그먼트
+
+    Row별로 냉매 건도(x) 추적 → 이상/과열 분기 → h_i, T_wall 변화 반영
+
+    Parameters
+    ----------
+    m_ref : float  — 냉매 질량유량 [kg/s]
+    x_in  : float  — 입구 건도 (증발기: 0.1~0.3, 응축기: 과열도/h_fg로 환산)
+    side  : str    — 'evap' or 'cond'
+
+    Returns
+    -------
+    dict: Q_total, Q_sen, Q_lat, SHR, T_out, row_details, ...
+    """
+    Nr = getattr(spec, 'tube_rows', 2)
+    Nt = getattr(spec, 'tube_cols', 8)
+
+    # 기하 분할
+    geo_row = _split_geo_per_row(geo, Nr)
+
+    # 튜브 직경, 냉매 질량유속
+    D_ch = spec.tube_di if hasattr(spec, 'tube_di') else geo.get('Dh', 5e-3)
+    # 냉매 회로: 직렬(serpentine) 가정 → 1개 튜브 단면적
+    # n_circuits > 1이면 병렬 회로 (향후 확장)
+    n_circuits = getattr(spec, 'n_circuits', 1)
+    A_cs_1 = np.pi * D_ch**2 / 4 * n_circuits
+    G_ref = max(m_ref / A_cs_1, 50)
+
+    # 냉매 물성
+    if side == 'evap':
+        T_sat = ref.T_sat_evap
+        h_fg = ref.h_fg_evap
+        P = ref.P_evap
+    else:
+        T_sat = ref.T_sat_cond
+        h_fg = ref.h_cond_v - ref.h_cond_l
+        P = ref.P_cond
+    T_sat_K = T_sat + 273.15
+
+    # 공기측 h_o (전체 Re 동일 가정)
+    h_o = air_htc_ft(spec, geo, V_face) if spec.hx_type == 'FT' \
+          else air_htc_mchx(spec, geo, V_face)
+
+    # 핀효율 (h_o 기반)
+    eta_o = _update_eta_o(spec, geo, h_o)
+
+    # 공기 상태
+    rho_air = 1.18; cp_air = 1006.0; P_atm = 101325.0; h_fg_water = 2501000.0
+    m_air = rho_air * V_face * spec.W * spec.H
+
+    try:
+        from CoolProp.HumidAirProp import HAPropsSI
+        _CP = True
+    except ImportError:
+        _CP = False
+
+    # 습공기 함수
+    def _ps(T):
+        Tk = T + 273.15
+        return np.exp(-5.8002206e3/Tk + 1.3914993 - 4.864e-2*Tk + 4.1765e-5*Tk**2 - 1.4452e-8*Tk**3 + 6.546*np.log(Tk))
+    def _W(T, RH):
+        Pw = RH * _ps(T)
+        return 0.62198 * Pw / (P_atm - Pw)
+    def _h_air(T, W):
+        return cp_air * T + W * (h_fg_water + 1860.0 * T)
+    def _Tdp(T, RH):
+        Pw = max(RH * _ps(T), 1.0)
+        return 243.5 * np.log(Pw / 611.2) / (17.67 - np.log(Pw / 611.2))
+
+    # ── Row별 순차 계산 ──
+    T_air = T_air_in
+    RH_air = RH_in
+    x_ref = x_in
+    T_ref = T_sat  # 이상이면 T_sat, 아니면 과열/과냉 온도
+
+    rows = []
+    Q_total = 0; Q_sen_total = 0; Q_lat_total = 0
+
+    for i in range(Nr):
+        # 냉매 과열 온도 (x>1일 때)
+        if x_ref > 1.0:
+            # x>1: 과열도를 에너지로 환산
+            props_v = _ref_vapor_props(ref, max(T_ref + 273.15, T_sat_K + 1))
+            cp_v = props_v['cp']
+        else:
+            cp_v = CP.PropsSI('C', 'T', T_sat_K, 'Q', 1, ref.refrigerant)
+
+        T_ref_K = T_ref + 273.15
+
+        # ── h_i 결정 (건도 기반) ──
+        h_i, phase = refrigerant_htc_v2(x_ref, D_ch, G_ref, ref, side, T_ref_K)
+
+        # ── T_wall 결정 ──
+        if phase in ('two_phase', 'transition'):
+            T_wall = T_sat
+        elif phase == 'superheated':
+            T_wall = T_ref  # 과열 증기 온도 ≈ 벽면 온도
+        else:  # subcooled
+            T_wall = T_ref
+
+        # ── UA (이 Row) ──
+        A_o_row = geo_row['A_total']
+        A_i_row = geo_row['A_i']
+        R_wall_row = geo_row['R_wall']
+        R_o = 1.0 / (eta_o * h_o * A_o_row + 1e-9)
+        R_i = 1.0 / (h_i * A_i_row + 1e-9)
+        UA_row = 1.0 / (R_o + R_wall_row + R_i)
+
+        # ── 공기측 습공기 상태 ──
+        if _CP:
+            W_air = HAPropsSI('W', 'T', T_air + 273.15, 'R', RH_air, 'P', P_atm)
+            h_air_in = HAPropsSI('H', 'T', T_air + 273.15, 'R', RH_air, 'P', P_atm)
+            T_dp = HAPropsSI('D', 'T', T_air + 273.15, 'R', RH_air, 'P', P_atm) - 273.15
+        else:
+            W_air = _W(T_air, RH_air)
+            h_air_in = _h_air(T_air, W_air)
+            T_dp = _Tdp(T_air, RH_air)
+
+        # ── ε-NTU 계산 ──
+        NTU = UA_row / (m_air * cp_air + 1e-9)
+        eps = 1 - np.exp(-NTU)
+
+        # ── Q 계산 ──
+        is_wet = (T_dp > T_wall) and (side == 'evap')
+        if is_wet:
+            # 습면: Threlkeld
+            if _CP:
+                W_sat_w = HAPropsSI('W', 'T', T_wall + 273.15, 'R', 1.0, 'P', P_atm)
+                h_sat_w = HAPropsSI('H', 'T', T_wall + 273.15, 'R', 1.0, 'P', P_atm)
+            else:
+                W_sat_w = _W(T_wall, 1.0)
+                h_sat_w = _h_air(T_wall, W_sat_w)
+
+            # 습면 b 계수
+            dWs_dT = max((W_sat_w - _W(T_wall - 1, 1.0)) if not _CP
+                         else (W_sat_w - HAPropsSI('W', 'T', T_wall + 272.15, 'R', 1.0, 'P', P_atm)),
+                         1e-5)
+            b = (cp_air + h_fg_water * dWs_dT) / cp_air
+            UA_wet = 1.0 / (1.0 / (eta_o * h_o * b * A_o_row + 1e-9)
+                            + R_wall_row + R_i)
+            NTU_wet = UA_wet / (m_air * cp_air + 1e-9)
+            eps_wet = 1 - np.exp(-NTU_wet)
+
+            Q_row = max(eps_wet * m_air * (h_air_in - h_sat_w), 0)
+            W_out = W_air - eps_wet * (W_air - W_sat_w)
+            W_out = max(W_out, W_sat_w)
+            Q_lat_row = m_air * (W_air - W_out) * h_fg_water
+            Q_sen_row = max(Q_row - Q_lat_row, 0)
+        else:
+            # 건면
+            Q_row = max(eps * m_air * cp_air * (T_air - T_wall), 0)
+            Q_sen_row = Q_row
+            Q_lat_row = 0
+            W_out = W_air
+
+        # ── 냉매 출구 상태 업데이트 ──
+        if phase == 'two_phase' or (phase == 'transition' and x_ref < 1.0):
+            # 이상 구간에서 x=1.0까지 필요한 열량
+            Q_to_sat = (1.0 - x_ref) * m_ref * h_fg
+            dx = Q_row / (m_ref * h_fg + 1e-9)
+            x_new = x_ref + dx
+
+            if x_new > 1.0 and x_ref < 1.0:
+                # ═══ Row 내 상전이: 2-phase → superheat 분할 ═══
+                # [Zone 1] 이상 → x=1.0: Q = Q_to_sat
+                Q_2ph = min(Q_to_sat, Q_row)
+                frac_2ph = Q_2ph / (Q_row + 1e-9)
+
+                # [Zone 2] 과열: 남은 면적에서 Gnielinski + T_wall=T_ref
+                frac_sh = 1.0 - frac_2ph
+                if frac_sh > 0.01:
+                    # 과열 시작 시점 공기 온도 추정
+                    T_air_mid = T_air - Q_2ph / (m_air * cp_air + 1e-9) * (Q_sen_row/(Q_row+1e-9))
+                    # 과열 증기 h_i
+                    T_sh_start_K = T_sat_K + 1.0
+                    props_v = _ref_vapor_props(ref, T_sh_start_K)
+                    Re_v = G_ref * D_ch / props_v['mu']
+                    h_i_sh = gnielinski_htc(Re_v, props_v['Pr'], props_v['k'], D_ch)
+                    # 과열 구간 UA (면적 비례)
+                    A_o_sh = A_o_row * frac_sh
+                    A_i_sh = A_i_row * frac_sh
+                    R_o_sh = 1.0 / (eta_o * h_o * A_o_sh + 1e-9)
+                    R_i_sh = 1.0 / (h_i_sh * A_i_sh + 1e-9)
+                    UA_sh = 1.0 / (R_o_sh + R_wall_row * frac_sh + R_i_sh)
+                    NTU_sh = UA_sh / (m_air * cp_air + 1e-9)
+                    eps_sh = 1 - np.exp(-NTU_sh)
+                    # T_wall = T_ref (과열 시작점 ≈ T_sat)
+                    T_wall_sh = T_sat + 1.0
+                    Q_sh = max(eps_sh * m_air * cp_air * (T_air_mid - T_wall_sh), 0)
+                    # 과열 온도 상승
+                    T_ref = T_sat + Q_sh / (m_ref * props_v['cp'] + 1e-9)
+                else:
+                    Q_sh = 0
+                    T_ref = T_sat + 1.0
+
+                Q_row = Q_2ph + Q_sh  # 총 Q 재계산
+                Q_sen_row = Q_sen_row * frac_2ph + Q_sh  # 과열은 전부 현열
+                x_ref = 1.0 + (T_ref - T_sat) * cp_v / h_fg
+            else:
+                x_ref = x_new
+                T_ref = T_sat  # 이상 구간은 T_sat 유지
+
+        elif phase == 'superheated':
+            dT = Q_row / (m_ref * cp_v + 1e-9)
+            T_ref = T_ref + dT
+            x_ref = 1.0 + (T_ref - T_sat) * cp_v / h_fg
+
+        elif phase == 'subcooled':
+            props_l = _ref_liquid_props(ref, T_ref + 273.15)
+            cp_l = props_l['cp']
+            dT = Q_row / (m_ref * cp_l + 1e-9)
+            T_ref = T_ref + dT
+            x_ref = -(T_sat - T_ref) * cp_l / h_fg
+
+        # ── 공기 출구 업데이트 ──
+        T_air_out = T_air - Q_sen_row / (m_air * cp_air + 1e-9)
+
+        # RH 역산
+        if _CP:
+            try:
+                RH_out = HAPropsSI('R', 'T', T_air_out + 273.15, 'W',
+                                   min(W_out, W_air), 'P', P_atm)
+                RH_out = min(max(RH_out, 0.01), 1.0)
+            except Exception:
+                RH_out = min(RH_air, 1.0)
+        else:
+            Pw = W_out * P_atm / (0.62198 + W_out)
+            RH_out = min(max(Pw / _ps(T_air_out), 0.01), 1.0)
+
+        rows.append(dict(
+            row=i, phase=phase, Q=Q_row, Q_sen=Q_sen_row, Q_lat=Q_lat_row,
+            h_i=h_i, h_o=h_o, eta_o=eta_o, UA=UA_row,
+            x_in=x_ref - (Q_row / (m_ref * h_fg + 1e-9) if phase == 'two_phase' else 0),
+            x_out=x_ref, T_ref=T_ref, T_wall=T_wall,
+            T_air_in=T_air, T_air_out=T_air_out,
+            is_wet=is_wet, eps=eps,
+        ))
+
+        Q_total += Q_row
+        Q_sen_total += Q_sen_row
+        Q_lat_total += Q_lat_row
+
+        # 다음 Row 입구
+        T_air = T_air_out
+        RH_air = RH_out
+
+    # ── 결과 ──
+    SHR = Q_sen_total / (Q_total + 1e-9)
+    last = rows[-1]
+    first = rows[0]
+
+    return dict(
+        Q_total=Q_total, Q_sen=Q_sen_total, Q_lat=Q_lat_total, SHR=SHR,
+        T_out=last['T_air_out'],
+        W_in=_W(T_air_in, RH_in) if not _CP else
+             HAPropsSI('W', 'T', T_air_in + 273.15, 'R', RH_in, 'P', P_atm),
+        W_out=W_out,
+        m_dot=m_air, m_ref=m_ref,
+        x_in=x_in, x_out=x_ref, T_ref_out=T_ref,
+        rows=rows, Nr=Nr,
+        is_wet=any(r['is_wet'] for r in rows),
+    )
