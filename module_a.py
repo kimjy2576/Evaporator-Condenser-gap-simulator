@@ -96,9 +96,12 @@ def _mixing_effectiveness(gap_mm: float, p: GapParams, evap_spec,
     """
     gap = max(gap_mm / 1000.0, 0.001)
     sigma_evap = 0.55
-    if hasattr(evap_spec, 'fin_pitch') and hasattr(evap_spec, 'fin_height'):
+    if hasattr(evap_spec, 'fin_pitch') and hasattr(evap_spec, 'tube_do'):
         sigma_evap = (evap_spec.fin_pitch - evap_spec.fin_thickness) / evap_spec.fin_pitch * \
                 (evap_spec.fin_height - evap_spec.tube_do) / evap_spec.fin_height
+    elif hasattr(evap_spec, 'fin_pitch'):
+        # MCHX: sigma from geo
+        sigma_evap = getattr(evap_spec, 'sigma', 0.55)
 
     H_gap = evap_spec.H
     V_gap = p.V_face

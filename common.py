@@ -632,7 +632,7 @@ def _update_eta_o(spec, geo: dict, h_o: float) -> float:
         eta_fin = np.tanh(mL) / mL
     else:
         eta_fin = 1.0
-    eta_o = 1 - (geo['A_fin'] / geo['A_total']) * (1 - eta_fin)
+    eta_o = 1 - (geo.get('A_fin', geo.get('A_louver', geo['A_total']*0.85)) / geo['A_total']) * (1 - eta_fin)
     return max(eta_o, 0.3)
 
 
@@ -814,7 +814,7 @@ def compute_coil_performance(spec, geo: dict, ua_result: dict,
             arg_wet = m_wet * L_fin
 
         eta_fin_wet = np.tanh(arg_wet) / (arg_wet + 1e-9)
-        A_fin = geo['A_fin']
+        A_fin = geo.get('A_fin', geo.get('A_louver', A_total * 0.85))
         eta_o_wet = 1.0 - (A_fin / A_total) * (1.0 - eta_fin_wet)
         eta_o_wet = max(eta_o_wet, 0.1)
 
@@ -875,20 +875,23 @@ def compute_coil_performance(spec, geo: dict, ua_result: dict,
 
 
 def _split_geo_per_row(geo: dict, Nr: int) -> dict:
-    """기하 데이터를 Row당 분할 — 직렬 연결"""
+    """기하 데이터를 Row당 분할 — 직렬 연결. FT/MCHX 공용."""
+    A_fin = geo.get('A_fin', geo.get('A_louver', geo['A_total'] * 0.85))
+    A_tube = geo.get('A_tube', geo['A_total'] - A_fin)
+    N_tubes = geo.get('N_tubes', geo.get('N_ch', 1))
     return dict(
-        Ac=geo['Ac'],                     # 유로 단면적: Row에 무관 (동일 전면)
+        Ac=geo['Ac'],                     # 유로 단면적: Row에 무관
         Afr=geo['Afr'],                   # 전면 면적: 동일
-        A_fin=geo['A_fin'] / Nr,          # 핀 면적: Row당 1/Nr
-        A_tube=geo['A_tube'] / Nr,        # 튜브 노출 면적: 1/Nr
+        A_fin=A_fin / Nr,                 # 핀 면적: Row당 1/Nr
+        A_tube=A_tube / Nr,               # 튜브 노출 면적: 1/Nr
         A_total=geo['A_total'] / Nr,      # 총 공기측 면적: 1/Nr
         A_i=geo['A_i'] / Nr,              # 냉매측 면적: 1/Nr
-        eta_o=geo['eta_o'],               # 핀효율: Row 무관 (동일 핀 구조)
+        eta_o=geo['eta_o'],               # 핀효율: Row 무관
         eta_fin=geo['eta_fin'],
         R_wall=geo['R_wall'] * Nr,        # 벽면 열저항: 직렬이므로 ×Nr
         sigma=geo['sigma'],               # 유로비: 동일
-        N_tubes=geo['N_tubes'] // Nr,     # Row당 튜브 수
-        depth=geo.get('depth', 0.045) / Nr,  # Row당 깊이
+        N_tubes=N_tubes // Nr,            # Row당 튜브 수
+        depth=geo.get('depth', 0.045) / Nr,
     )
 
 
@@ -922,7 +925,9 @@ def compute_coil_performance_segmented(spec, geo: dict, ua_result: dict,
 
     인터페이스는 compute_coil_performance()과 동일 → drop-in 교체 가능
     """
-    Nr = getattr(spec, 'tube_rows', 2)
+    Nr = getattr(spec, 'tube_rows', None)
+    if Nr is None:
+        Nr = getattr(spec, 'n_slabs', 1)  # MCHX: n_slabs 사용
     if Nr <= 1:
         return compute_coil_performance(spec, geo, ua_result,
                                         T_in, RH_in, T_wall, V_face)

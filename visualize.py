@@ -966,7 +966,7 @@ def make_single_schematic(evap_spec, cond_spec, evap_geo, cond_geo,
     result_a_ref : simulate_gap 결과 (대표 Gap, e.g. G=20mm)
     viz_b : dict with V_face, V_onset, q_cond, P_reach_arr, carry_penalty, ...
     """
-    from module_b import CarryoverSpec, monte_carlo, eta_co, v_onset, we_ch, we_crit
+    from module_b import CarryoverSpec, MCHXCarryoverSpec, monte_carlo, eta_co, v_onset, we_ch, we_crit
 
     fig, ax = plt.subplots(1, 1, figsize=(14, 8), facecolor=DARK["bg"])
     ax.set_xlim(0, 14)
@@ -1008,8 +1008,9 @@ def make_single_schematic(evap_spec, cond_spec, evap_geo, cond_geo,
                 f"$h_o$={ua_d['h_o']:.0f}  $h_i$={ua_d['h_i']:.0f}",
                 ha='center', fontsize=8, color=DARK["dim"])
         # 핀 타입
-        ft = getattr(spec, 'fin_type', 'plain')
-        ax.text(x0+1.4, 0.0, f"{ft} / {spec.tube_layout[0].upper()}",
+        ft = getattr(spec, 'fin_type', 'MCHX' if spec.hx_type == 'MCHX' else 'plain')
+        layout = getattr(spec, 'tube_layout', 'mchx')[0].upper()
+        ax.text(x0+1.4, 0.0, f"{ft} / {layout}",
                 ha='center', fontsize=7, color=clr, alpha=0.6)
 
     _hx_block(0.3, evap_spec, ua_ev, "evap")
@@ -1063,15 +1064,20 @@ def make_single_schematic(evap_spec, cond_spec, evap_geo, cond_geo,
 
     # ── ⑤ 비말동반 궤적 (대표 1개) ──
     # 실제 MC 궤적 계산
-    co_spec = CarryoverSpec(evap_spec, evap_geo)
+    if evap_spec.hx_type == 'MCHX':
+        co_spec = MCHXCarryoverSpec(evap_spec, evap_geo)
+    else:
+        co_spec = CarryoverSpec(evap_spec, evap_geo)
     from module_b import track_batch, sample_bimodal
-    eta_val = eta_co(V_face, co_spec, 5e-4) if V_face > v_onset(co_spec) else 0
+    V_onset_val = v_onset(co_spec) if evap_spec.hx_type == 'FT' else 2.5
+    eta_val = eta_co(V_face, co_spec, 5e-4) if V_face > V_onset_val else 0
 
     if eta_val > 0:
         # 비말동반 활성 → 도달 궤적 표시
         rng = np.random.RandomState(42)
         d_arr = sample_bimodal(50, rng, 0.75)
-        y0_arr = rng.uniform(-evap_spec.H/2 + evap_spec.h_drain, evap_spec.H/2, 50)
+        h_drain = getattr(evap_spec, 'h_drain', 0.025)
+        y0_arr = rng.uniform(-evap_spec.H/2 + h_drain, evap_spec.H/2, 50)
         gap_m = gap_mm / 1000.0
         reached_mask, y_hit = track_batch(d_arr, y0_arr, gap_m, V_face, co_spec, 0.0)
 
