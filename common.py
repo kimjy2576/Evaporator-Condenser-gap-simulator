@@ -1398,79 +1398,46 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
 #  Level 2 코일 모델 — Tube-by-Tube × Segment (CoilDesigner 수준)
 # ═══════════════════════════════════════════════════════════════════
 
+
+
+
 def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
-                    m_ref, x_in, side='evap', N_seg=10):
-    """
-    Level 2 Tube-by-Tube × Segment 코일 모델
-
-    각 튜브를 N_seg 세그먼트로 분할, 냉매 건도를 세그먼트별 추적.
-    냉매 회로: serpentine (Row별 Nt개 tube 직렬, Row간 U-bend)
-    공기: Row 내 tube는 같은 공기 조건, Row간 순차 (직교류)
-
-    Parameters
-    ----------
-    spec, geo, ref : 기하/냉매 스펙
-    T_air_in, RH_in, V_face : 공기 조건
-    m_ref : 냉매 질량유량 [kg/s]
-    x_in  : 입구 건도
-    side  : 'evap' or 'cond'
-    N_seg : 튜브당 세그먼트 수 (기본 10)
-
-    Returns
-    -------
-    dict with: Q_total, Q_sen, Q_lat, T_out, x_out, T_ref_out,
-               tube_details, segment_map, phase_summary
-    """
+                    m_ref, x_in, side='evap', N_seg=10, flow='counter'):
+    """Level 2 Tube-Segment coil model. flow='counter' or 'parallel'."""
     Nr = getattr(spec, 'tube_rows', getattr(spec, 'n_slabs', 1))
     Nt = getattr(spec, 'tube_cols', 1)
     Nr = max(Nr, 1); Nt = max(Nt, 1)
     N_tubes = Nr * Nt
-
-    cp_air = 1006.0; P_atm = 101325.0
-    h_fg_lat = 2501000.0
-
+    cp_air = 1006.0; P_atm = 101325.0; h_fg_lat = 2501000.0
     try:
         from CoolProp.HumidAirProp import HAPropsSI
         _CP = True
     except ImportError:
         _CP = False
-
-    # ── 냉매 물성 ──
     rf = ref.refrigerant
     if side == 'evap':
-        T_sat = ref.T_sat_evap; T_sat_K = T_sat + 273.15
-        h_fg = ref.h_fg_evap
+        T_sat = ref.T_sat_evap; T_sat_K = T_sat + 273.15; h_fg = ref.h_fg_evap
     else:
-        T_sat = ref.T_sat_cond; T_sat_K = T_sat + 273.15
-        h_fg = ref.h_cond_v - ref.h_cond_l
-
+        T_sat = ref.T_sat_cond; T_sat_K = T_sat + 273.15; h_fg = ref.h_cond_v - ref.h_cond_l
     cp_v = CP.PropsSI('C', 'T', T_sat_K, 'Q', 1, rf)
     cp_l = CP.PropsSI('C', 'T', T_sat_K, 'Q', 0, rf)
-
-    # ── 공기측 h_o (전체 동일) ──
-    h_o = air_htc_ft(spec, geo, V_face) if spec.hx_type == 'FT' \
-          else air_htc_mchx(spec, geo, V_face)
+    h_o = air_htc_ft(spec, geo, V_face) if spec.hx_type == 'FT' else air_htc_mchx(spec, geo, V_face)
     eta_o = geo['eta_o']
     for _ in range(5):
         eta_o_new = _update_eta_o(spec, geo, h_o)
         if abs(eta_o_new - eta_o) < 0.001: break
         eta_o = eta_o_new
-
-    # ── 세그먼트당 면적 ──
     A_o_seg = geo['A_total'] / (N_tubes * N_seg)
     A_i_seg = geo['A_i'] / (N_tubes * N_seg)
-    # 벽면 열저항: 전체 R_wall은 N_tubes 기준 → 세그먼트당 ×(N_tubes×N_seg)
     R_wall_seg = geo['R_wall'] * N_tubes * N_seg
     A_fin_ratio = geo['A_fin'] / (geo['A_total'] + 1e-9)
-
-    # ── 습공기 함수 ──
     if _CP:
-        def get_W(T, RH): return HAPropsSI('W','T',T+273.15,'R',max(RH,0.01),'P',P_atm)
-        def get_h(T, RH): return HAPropsSI('H','T',T+273.15,'R',max(RH,0.01),'P',P_atm)
-        def get_RH(T, W):
+        def get_W(T,RH): return HAPropsSI('W','T',T+273.15,'R',max(RH,0.01),'P',P_atm)
+        def get_h(T,RH): return HAPropsSI('H','T',T+273.15,'R',max(RH,0.01),'P',P_atm)
+        def get_RH(T,W):
             try: return min(max(HAPropsSI('R','T',T+273.15,'W',W,'P',P_atm),0.01),1.0)
             except: return 0.5
-        def get_Tdp(T, RH):
+        def get_Tdp(T,RH):
             try: return HAPropsSI('D','T',T+273.15,'R',max(RH,0.01),'P',P_atm)-273.15
             except: return T-10
         def get_Wsat(T): return HAPropsSI('W','T',T+273.15,'R',1.0,'P',P_atm)
@@ -1488,268 +1455,152 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
         def get_Wsat(T): return get_W(T,1.0)
         def get_hsat(T): W=get_Wsat(T); return 1006*T+W*(2501000+1860*T)
 
-    # ── 세그먼트 1개 열량 계산 함수 ──
-    def calc_segment(T_air, W_air, RH_air, x_ref, T_ref, m_air):
-        """단일 세그먼트 열량 계산 → (Q, T_air_out, W_out, RH_out, x_out, T_ref_out, phase, h_i, is_wet)"""
-        # h_i
-        Q_est = min(m_air * cp_air * max(abs(T_air - T_sat), 0.1) * 0.1, m_ref * h_fg * 0.05)
-        h_i, phase = refrigerant_htc_auto(spec, geo, ref, side, x_ref, m_ref, max(Q_est, 1.0))
-
-        # T_wall
-        if phase in ('two_phase', 'transition') and x_ref <= 1.0:
-            T_wall = T_sat
-        else:
-            T_wall = T_ref
-
-        # UA_seg
-        R_o = 1.0 / (eta_o * h_o * A_o_seg + 1e-9)
-        R_i = 1.0 / (h_i * A_i_seg + 1e-9)
-        UA_seg = 1.0 / (R_o + R_wall_seg + R_i)
-
-        NTU = UA_seg / (m_air * cp_air + 1e-9)
-        eps = 1.0 - np.exp(-min(NTU, 7.0))
-
-        T_dp = get_Tdp(T_air, RH_air)
-        is_wet = (T_dp > T_wall) and (side == 'evap')
-
+    def calc_seg(T_air, W_air, RH_air, x_ref, T_ref, m_air):
+        Q_est = min(m_air*cp_air*max(abs(T_air-T_sat),0.1)*0.1, m_ref*h_fg*0.05)
+        h_i, phase = refrigerant_htc_auto(spec, geo, ref, side, x_ref, m_ref, max(Q_est,1.0))
+        T_wall = T_sat if (phase in ('two_phase','transition') and x_ref<=1.0) else T_ref
+        R_o=1.0/(eta_o*h_o*A_o_seg+1e-9); R_i=1.0/(h_i*A_i_seg+1e-9)
+        UA=1.0/(R_o+R_wall_seg+R_i)
+        NTU=UA/(m_air*cp_air+1e-9); eps=1.0-np.exp(-min(NTU,7.0))
+        T_dp=get_Tdp(T_air,RH_air); is_wet=(T_dp>T_wall) and (side=='evap')
         if is_wet:
-            h_air = get_h(T_air, RH_air)
-            h_sat_w = get_hsat(T_wall)
-            W_sat_w = get_Wsat(T_wall)
-
-            T_mid = (T_air + T_wall) / 2
-            W_s1 = get_Wsat(T_mid); W_s2 = get_Wsat(T_mid + 0.5)
-            dWs_dT = (W_s2 - W_s1) / 0.5
-            b = max(1.0 + h_fg_lat * dWs_dT / cp_air, 1.0)  # 물리값 그대로
-
-            # ★ 정석 Threlkeld: h_o 자체는 불변, b는 η_fin_wet에만 반영
-            # m_wet = sqrt(2×h_o×b/(k×δ)) → η_fin_wet < η_fin_dry
-            k_fin = 230.0 if getattr(spec,'fin_material','Al')=='Al' else 386.0
-            df = getattr(spec, 'fin_thickness', 0.1e-3)
-            m_wet = np.sqrt(2 * h_o * b / (k_fin * df + 1e-9))
-            if hasattr(spec, 'tube_do'):
-                r_i = spec.tube_do / 2
-                Xm = spec.tube_pitch_t / 2
-                XL = np.sqrt((spec.tube_pitch_t/2)**2 + spec.tube_pitch_l**2) / 2
-                r_eq = max(1.27 * Xm * np.sqrt(max(XL/Xm - 0.3, 0.01)), r_i*1.01)
-                phi = (r_eq/r_i - 1) * (1 + 0.35*np.log(r_eq/r_i))
-                mL = m_wet * r_i * phi
-            else:
-                L_fin = getattr(spec, 'slab_pitch', 8e-3) / 2
-                mL = m_wet * L_fin
-            eta_fin_wet = np.tanh(mL) / (mL + 1e-9)
-            eta_o_wet = max(1.0 - A_fin_ratio * (1 - eta_fin_wet), 0.2)
-
-            # UA_wet: η_o_wet × h_o × A (h_o에 b 안 곱함!)
-            UA_o_wet = eta_o_wet * h_o * A_o_seg
-            UA_wet = 1.0 / (1.0/UA_o_wet + R_wall_seg + R_i)
-            NTU_wet = UA_wet / (m_air * cp_air + 1e-9)
-            eps_wet = 1.0 - np.exp(-min(NTU_wet, 7.0))
-
-            Q = max(eps_wet * m_air * (h_air - h_sat_w), 0.0)
-            W_out = max(W_air - eps_wet * (W_air - W_sat_w), W_sat_w)
-            T_out = T_air - eps_wet * (T_air - T_wall)
+            h_a=get_h(T_air,RH_air); h_sw=get_hsat(T_wall); W_sw=get_Wsat(T_wall)
+            T_mid=(T_air+T_wall)/2; dWs=(get_Wsat(T_mid+0.5)-get_Wsat(T_mid))/0.5
+            b=max(1.0+h_fg_lat*dWs/cp_air, 1.0)
+            k_f=230.0 if getattr(spec,'fin_material','Al')=='Al' else 386.0
+            df=getattr(spec,'fin_thickness',0.1e-3)
+            m_w=np.sqrt(2*h_o*b/(k_f*df+1e-9))
+            if hasattr(spec,'tube_do'):
+                r_i=spec.tube_do/2; Xm=spec.tube_pitch_t/2
+                XL=np.sqrt((spec.tube_pitch_t/2)**2+spec.tube_pitch_l**2)/2
+                r_eq=max(1.27*Xm*np.sqrt(max(XL/Xm-0.3,0.01)),r_i*1.01)
+                phi=(r_eq/r_i-1)*(1+0.35*np.log(r_eq/r_i)); mL=m_w*r_i*phi
+            else: mL=m_w*getattr(spec,'slab_pitch',8e-3)/2
+            eta_fw=np.tanh(mL)/(mL+1e-9)
+            eta_ow=max(1.0-A_fin_ratio*(1-eta_fw),0.2)
+            UA_w=1.0/(1.0/(eta_ow*h_o*A_o_seg)+R_wall_seg+R_i)
+            eps_w=1.0-np.exp(-min(UA_w/(m_air*cp_air+1e-9),7.0))
+            Q=max(eps_w*m_air*(h_a-h_sw),0.0)
+            W_o=max(W_air-eps_w*(W_air-W_sw),W_sw); T_o=T_air-eps_w*(T_air-T_wall)
         else:
-            if side == 'evap':
-                dT = max(T_air - T_wall, 0.0)
+            dT=max(T_air-T_wall,0.0) if side=='evap' else max(T_wall-T_air,0.0)
+            Q=eps*m_air*cp_air*dT
+            T_o=T_air-Q/(m_air*cp_air) if side=='evap' and Q>0 else \
+                T_air+Q/(m_air*cp_air) if side=='cond' and Q>0 else T_air
+            T_o=np.clip(T_o,-40,120); W_o=W_air
+        x_n=x_ref; T_n=T_ref
+        if phase in ('two_phase','transition') and x_ref<=1.0:
+            dx=Q/(m_ref*h_fg+1e-9)
+            if side=='evap':
+                x_n=x_ref+dx
+                if x_n>1.0 and x_ref<1.0:
+                    frac=np.clip((1.0-x_ref)/(dx+1e-9),0,1)
+                    T_n=T_sat+Q*(1-frac)/(m_ref*cp_v+1e-9); x_n=1.0+(T_n-T_sat)*cp_v/h_fg
+                else: T_n=T_sat
             else:
-                dT = max(T_wall - T_air, 0.0)
-            Q = eps * m_air * cp_air * dT
-            T_out = T_air - Q/(m_air*cp_air) if side=='evap' and Q>0 else \
-                    T_air + Q/(m_air*cp_air) if side=='cond' and Q>0 else T_air
-            T_out = np.clip(T_out, -40, 120)
-            W_out = W_air
+                x_n=x_ref-dx
+                if x_n<0 and x_ref>0:
+                    frac=np.clip(x_ref/(dx+1e-9),0,1)
+                    T_n=T_sat-Q*(1-frac)/(m_ref*cp_l+1e-9); x_n=-(T_sat-T_n)*cp_l/h_fg
+                else: T_n=T_sat
+        elif phase=='superheated':
+            dTr=Q/(m_ref*cp_v+1e-9); T_n=T_ref+dTr if side=='evap' else T_ref-dTr
+            x_n=1.0+(T_n-T_sat)*cp_v/h_fg
+        elif phase=='subcooled':
+            dTr=Q/(m_ref*cp_l+1e-9); T_n=T_ref+dTr if side=='evap' else T_ref-dTr
+            x_n=-(T_sat-T_n)*cp_l/h_fg
+        return Q,T_o,W_o,get_RH(T_o,W_o),x_n,T_n,phase,h_i,T_wall,is_wet
 
-        # 냉매 상태 업데이트
-        x_new = x_ref; T_ref_new = T_ref
-        if phase in ('two_phase', 'transition') and x_ref <= 1.0:
-            dx = Q / (m_ref * h_fg + 1e-9)
-            if side == 'evap':
-                x_new = x_ref + dx
-                if x_new > 1.0 and x_ref < 1.0:
-                    frac = np.clip((1.0 - x_ref)/(dx+1e-9), 0, 1)
-                    Q_sh = Q * (1 - frac)
-                    T_ref_new = T_sat + Q_sh / (m_ref * cp_v + 1e-9)
-                    x_new = 1.0 + (T_ref_new - T_sat) * cp_v / h_fg
-                else:
-                    T_ref_new = T_sat
-            else:
-                x_new = x_ref - dx
-                if x_new < 0 and x_ref > 0:
-                    frac = np.clip(x_ref/(dx+1e-9), 0, 1)
-                    Q_sc = Q * (1 - frac)
-                    T_ref_new = T_sat - Q_sc / (m_ref * cp_l + 1e-9)
-                    x_new = -(T_sat - T_ref_new) * cp_l / h_fg
-                else:
-                    T_ref_new = T_sat
-        elif phase == 'superheated':
-            dT_r = Q / (m_ref * cp_v + 1e-9)
-            T_ref_new = T_ref + dT_r if side=='evap' else T_ref - dT_r
-            x_new = 1.0 + (T_ref_new - T_sat) * cp_v / h_fg
-        elif phase == 'subcooled':
-            dT_r = Q / (m_ref * cp_l + 1e-9)
-            T_ref_new = T_ref + dT_r if side=='evap' else T_ref - dT_r
-            x_new = -(T_sat - T_ref_new) * cp_l / h_fg
+    def build_tube_order(row_seq):
+        order = []
+        for i, row in enumerate(row_seq):
+            tubes = list(range(row*Nt, (row+1)*Nt))
+            if i % 2 == 1: tubes.reverse()
+            order.extend(tubes)
+        return order
 
-        RH_out = get_RH(T_out, W_out)
-        return Q, T_out, W_out, RH_out, x_new, T_ref_new, phase, h_i, T_wall, is_wet
+    if flow == 'counter':
+        ref_row_seq = list(range(Nr-1, -1, -1))
+    else:
+        ref_row_seq = list(range(Nr))
+    tube_order = build_tube_order(ref_row_seq)
 
-    # ── 냉매 회로: serpentine ──
-    # Row 0: tube 0→1→...→(Nt-1) (좌→우)
-    # Row 1: tube (2Nt-1)→(2Nt-2)→...→Nt (우→좌)
-    # ...
-    tube_order = []
-    for row in range(Nr):
-        row_tubes = list(range(row * Nt, (row + 1) * Nt))
-        if row % 2 == 1:
-            row_tubes.reverse()  # U-bend: 교대 방향
-        tube_order.extend(row_tubes)
+    T_air_rows = [T_air_in] * Nr
+    W_air_rows = [get_W(T_air_in, RH_in)] * Nr
+    RH_air_rows = [RH_in] * Nr
+    N_iter = 5  # 공기↔냉매 수렴 반복 (counter/parallel 모두)
+    final = None
 
-    # ── 초기 상태 ──
-    x_ref = x_in
-    T_ref = T_sat
-    if x_ref > 1.0:
-        T_ref = T_sat + (x_ref - 1.0) * h_fg / cp_v
-    elif x_ref < 0:
-        T_ref = T_sat + x_ref * h_fg / cp_l
+    for iteration in range(N_iter):
+        x_ref = x_in; T_ref = T_sat
+        if x_ref > 1.0: T_ref = T_sat + (x_ref-1.0)*h_fg/cp_v
+        elif x_ref < 0: T_ref = T_sat + x_ref*h_fg/cp_l
+        all_segs = []; tube_results = []
+        Q_per_row = [0.0]*Nr; Q_lat_per_row = [0.0]*Nr
 
-    # 공기 상태: Row별 (같은 Row 내 tube는 동일 공기)
-    T_air_row = T_air_in
-    RH_air_row = RH_in
-    W_air_row = get_W(T_air_row, RH_air_row)
+        for tube_id in tube_order:
+            row = tube_id // Nt
+            rho_a = P_atm/(287.05*(T_air_rows[row]+273.15))
+            m_air = rho_a*V_face*spec.W*spec.H
+            m_air_seg = m_air / (Nt * N_seg)
+            Q_t=0; Q_st=0; Q_lt=0; segs=[]
+            for seg in range(N_seg):
+                Q_s,T_o,W_o,RH_o,x_n,T_n,phase,h_i,T_w,wet = \
+                    calc_seg(T_air_rows[row],W_air_rows[row],RH_air_rows[row],x_ref,T_ref,m_air_seg)
+                Q_lat_s = m_air_seg*max(W_air_rows[row]-W_o,0)*h_fg_lat if wet else 0.0
+                Q_lat_s = min(Q_lat_s, Q_s); Q_sen_s = max(Q_s-Q_lat_s, 0.0)
+                segs.append(dict(tube=tube_id,seg=seg,row=row,x_in=x_ref,x_out=x_n,
+                    T_ref=T_n,T_wall=T_w,Q=Q_s,Q_sen=Q_sen_s,Q_lat=Q_lat_s,
+                    h_i=h_i,phase=phase,is_wet=wet))
+                Q_t+=Q_s; Q_st+=Q_sen_s; Q_lt+=Q_lat_s; x_ref=x_n; T_ref=T_n
+            all_segs.extend(segs)
+            tube_results.append(dict(tube=tube_id,row=row,Q=Q_t,Q_sen=Q_st,Q_lat=Q_lt,
+                x_in=segs[0]['x_in'],x_out=segs[-1]['x_out'],T_ref_out=segs[-1]['T_ref'],
+                h_i_avg=np.mean([s['h_i'] for s in segs]),
+                phase_dominant=max(set(s['phase'] for s in segs),
+                    key=lambda p: sum(1 for s in segs if s['phase']==p)),
+                segments=segs))
+            Q_per_row[row] += Q_t; Q_lat_per_row[row] += Q_lt
 
-    # 결과 저장
-    all_segs = []  # [{tube, seg, x, T_ref, Q, h_i, T_wall, phase, ...}]
-    tube_results = []  # tube별 합산
-    Q_total = 0; Q_sen_total = 0; Q_lat_total = 0
-    current_row = 0
+        T_a = T_air_in; W_a = get_W(T_air_in, RH_in)
+        for row in range(Nr):
+            T_air_rows[row] = T_a; W_air_rows[row] = W_a
+            RH_air_rows[row] = get_RH(T_a, W_a)
+            if Q_per_row[row] > 0:
+                rho_a = P_atm/(287.05*(T_a+273.15))
+                m_a = rho_a*V_face*spec.W*spec.H
+                T_a -= Q_per_row[row]/(m_a*cp_air+1e-9)
+                T_a = np.clip(T_a, -40, 120)
+                if Q_lat_per_row[row] > 0:
+                    dW = Q_lat_per_row[row]/(m_a*h_fg_lat+1e-9)
+                    W_a = max(W_a-dW, get_Wsat(T_sat) if side=='evap' else 0)
+        final = (all_segs, tube_results, Q_per_row, Q_lat_per_row, x_ref, T_ref, T_a, W_a)
 
-    for tube_idx_in_order, tube_id in enumerate(tube_order):
-        row = tube_id // Nt
-
-        # Row 전환 시 공기 상태 업데이트
-        if row != current_row:
-            # 이전 Row의 모든 tube segment Q로 공기 출구 계산
-            # (같은 Row의 Nt tube가 병렬로 공기를 처리)
-            Q_row_total = sum(s['Q'] for s in all_segs
-                            if s['tube'] // Nt == current_row)
-            Q_lat_row = sum(s['Q_lat'] for s in all_segs
-                           if s['tube'] // Nt == current_row)
-
-            rho_air = P_atm / (287.05 * (T_air_row + 273.15))
-            m_air_total = rho_air * V_face * spec.W * spec.H
-
-            if Q_row_total > 0:
-                # 공기 출구: Q = m_air × Δh (엔탈피 기반)
-                h_air_in = get_h(T_air_row, RH_air_row)
-                h_air_out = h_air_in - Q_row_total / (m_air_total + 1e-9)
-                # T, W 근사 역산
-                T_air_row = T_air_row - Q_row_total / (m_air_total * cp_air + 1e-9)
-                T_air_row = np.clip(T_air_row, -40, 120)
-                if Q_lat_row > 0:
-                    dW = Q_lat_row / (m_air_total * h_fg_lat + 1e-9)
-                    W_air_row = max(W_air_row - dW, get_Wsat(T_sat) if side=='evap' else 0)
-                RH_air_row = get_RH(T_air_row, W_air_row)
-
-            current_row = row
-
-        # 공기 상태 (이 Row의 공기)
-        rho_air = P_atm / (287.05 * (T_air_row + 273.15))
-        m_air_total = rho_air * V_face * spec.W * spec.H
-        # 직교류: 각 세그먼트는 전체 공기의 1/(Nt×N_seg) 처리
-        m_air_seg = m_air_total / (Nt * N_seg)
-        # 각 tube는 전체 공기의 1/Nt를 처리 (병렬)
-        # → 아님! 직교류에서 각 tube는 전체 공기 흐름에 노출
-        # 하지만 tube 1개의 면적은 A_total/(Nr×Nt)
-        # → m_air는 전체 유량 (Row 전체에 대해)
-        # 세그먼트 계산 시 m_air/Nt로 분할? → 아님, A_seg가 이미 1/(N_tubes×N_seg)
-
-        # tube Q 합산
-        Q_tube = 0; Q_sen_tube = 0; Q_lat_tube = 0
-        tube_segs = []
-
-        for seg in range(N_seg):
-            Q_s, T_out_s, W_out_s, RH_out_s, x_new, T_ref_new, phase, h_i, T_wall, is_wet = \
-                calc_segment(T_air_row, W_air_row, RH_air_row, x_ref, T_ref, m_air_seg)
-
-            # 잠열/현열 분리
-            if is_wet:
-                Q_lat_s = m_air_seg * max(W_air_row - W_out_s, 0) * h_fg_lat
-                Q_lat_s = min(Q_lat_s, Q_s)  # 잠열 > 전열 방지
-            else:
-                Q_lat_s = 0.0
-            Q_sen_s = max(Q_s - Q_lat_s, 0.0)
-
-            seg_data = dict(
-                tube=tube_id, seg=seg, row=row,
-                x_in=x_ref, x_out=x_new, T_ref=T_ref_new, T_wall=T_wall,
-                Q=Q_s, Q_sen=Q_sen_s, Q_lat=Q_lat_s,
-                h_i=h_i, phase=phase, is_wet=is_wet,
-            )
-            all_segs.append(seg_data)
-            tube_segs.append(seg_data)
-
-            Q_tube += Q_s; Q_sen_tube += Q_sen_s; Q_lat_tube += Q_lat_s
-
-            # 냉매 상태 업데이트 (다음 세그먼트로)
-            x_ref = x_new
-            T_ref = T_ref_new
-
-        tube_results.append(dict(
-            tube=tube_id, row=row,
-            Q=Q_tube, Q_sen=Q_sen_tube, Q_lat=Q_lat_tube,
-            x_in=tube_segs[0]['x_in'], x_out=tube_segs[-1]['x_out'],
-            T_ref_out=tube_segs[-1]['T_ref'],
-            h_i_avg=np.mean([s['h_i'] for s in tube_segs]),
-            phase_dominant=max(set(s['phase'] for s in tube_segs),
-                             key=lambda p: sum(1 for s in tube_segs if s['phase']==p)),
-            segments=tube_segs,
-        ))
-
-        Q_total += Q_tube
-        Q_sen_total += Q_sen_tube
-        Q_lat_total += Q_lat_tube
-
-    # 마지막 Row 공기 업데이트
-    Q_last_row = sum(s['Q'] for s in all_segs if s['tube'] // Nt == current_row)
-    Q_lat_last = sum(s['Q_lat'] for s in all_segs if s['tube'] // Nt == current_row)
-    rho_air = P_atm / (287.05 * (T_air_row + 273.15))
-    m_air_total = rho_air * V_face * spec.W * spec.H
-    if Q_last_row > 0:
-        T_air_row -= Q_last_row / (m_air_total * cp_air + 1e-9)
-        T_air_row = np.clip(T_air_row, -40, 120)
-        if Q_lat_last > 0:
-            dW = Q_lat_last / (m_air_total * h_fg_lat + 1e-9)
-            W_air_row = max(W_air_row - dW, 0)
-        RH_air_row = get_RH(T_air_row, W_air_row)
-
-    # ── 결과 집계 ──
-    SHR = Q_sen_total / (Q_total + 1e-9)
+    all_segs, tube_results, Q_per_row, _, x_ref, T_ref, T_air_out, W_air_out = final
+    Q_total = sum(Q_per_row)
+    Q_sen_total = sum(s['Q_sen'] for s in all_segs)
+    Q_lat_total = sum(s['Q_lat'] for s in all_segs)
+    SHR = Q_sen_total/(Q_total+1e-9)
     phases = [s['phase'] for s in all_segs]
-    n_2ph = phases.count('two_phase')
-    n_sh = phases.count('superheated')
-    n_sc = phases.count('subcooled')
-    n_tr = phases.count('transition')
-
-    rho_in = P_atm / (287.05 * (T_air_in + 273.15))
-    m_air_in = rho_in * V_face * spec.W * spec.H
-
+    rho_in = P_atm/(287.05*(T_air_in+273.15))
+    m_air_in = rho_in*V_face*spec.W*spec.H
     return dict(
         Q_total=Q_total, Q_sen=Q_sen_total, Q_lat=Q_lat_total, SHR=SHR,
-        T_out=T_air_row, W_out=W_air_row,
-        T_ref_out=T_ref, x_out=x_ref,
-        m_dot=m_air_in, m_ref=m_ref,
+        T_out=T_air_out, W_out=W_air_out, T_ref_out=T_ref, x_out=x_ref,
+        m_dot=m_air_in, m_ref=m_ref, flow=flow,
         tubes=tube_results, Nr=Nr, Nt=Nt, N_seg=N_seg,
-        N_total_seg=len(all_segs),
-        phase_summary=dict(two_phase=n_2ph, superheated=n_sh,
-                          subcooled=n_sc, transition=n_tr),
-        # 호환
+        N_total_seg=len(all_segs), Q_per_row=Q_per_row,
+        phase_summary=dict(two_phase=phases.count('two_phase'),
+            superheated=phases.count('superheated'),
+            subcooled=phases.count('subcooled'),
+            transition=phases.count('transition')),
         eps=Q_total/(m_air_in*cp_air*abs(T_air_in-T_sat)+1e-9) if abs(T_air_in-T_sat)>0.1 else 0,
-        T_dp=get_Tdp(T_air_in, RH_in),
-        h_in=get_h(T_air_in, RH_in),
-        W_in=get_W(T_air_in, RH_in),
-        is_wet=any(s['is_wet'] for s in all_segs),
-        rows=[],  # 호환용 빈 리스트
+        T_dp=get_Tdp(T_air_in,RH_in), h_in=get_h(T_air_in,RH_in),
+        W_in=get_W(T_air_in,RH_in), is_wet=any(s['is_wet'] for s in all_segs),
+        rows=[], eps_dry=0, NTU=0, NTU_dry=0, UA_eff=0, UA_dry=0, eta_o_eff=eta_o,
+        h_sat_w=get_hsat(T_sat), h_out=get_h(T_air_out,get_RH(T_air_out,W_air_out)),
+        q_cond=m_air_in*(get_W(T_air_in,RH_in)-W_air_out)*1000 if Q_lat_total>0 else 0,
+        dehumid_rate=m_air_in*(get_W(T_air_in,RH_in)-W_air_out)*3600*1000 if Q_lat_total>0 else 0,
     )
 
 
