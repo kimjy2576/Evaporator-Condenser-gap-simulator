@@ -23,9 +23,14 @@
                     │  FinTubeSpec / MCHXSpec (기하)     │
                     │  RefrigerantState (CoolProp 물성)  │
                     │  compute_ft_geometry()             │
+                    │  select_correlations() ★ 자동 선택  │
                     │  compute_UA() — h_o, h_i, η_o     │
                     │  compute_coil_performance()        │
                     │  compute_coil_performance_segmented│
+                    │  compute_coil_v2() — Level 1       │
+                    │  compute_coil_v3() — Level 2 ★     │
+                    │  refrigerant_htc_auto() ★ 상분기   │
+                    │  gnielinski_htc() ★ 단상           │
                     │  ↑ Threlkeld 정석 열전달 엔진      │
                     └───┬──────────┬──────────┬─────────┘
                         │          │          │
@@ -39,23 +44,23 @@
               │           run_single.py                  │
               │           run_compare.py                 │
               │           visualize.py                   │
-              │           gap_sim_config.py (GUI)        │
+              │           gap_simulator_app.py (GUI)     │
               └─────────────────────────────────────────┘
 ```
 
 
 ## 3. 파일 구조
 
-| 파일 | 줄 수 | 역할 |
-|------|------|------|
-| `common.py` | 1045 | 공통 기반: 스펙, 기하, 물성, 열전달 엔진, j/f 상관식 |
-| `module_a.py` | 455 | Gap 열유동: 재순환, 복사, 전도, 혼합 손실 |
-| `module_b.py` | 553 | 비말동반: Weber, Monte Carlo, Flux, Risk |
-| `module_c.py` | 1382 | 압력강하: f-factor, ΔP_core, ΔP_gap, 습면 보정 |
-| `visualize.py` | 1143 | 가시화: 2×3 패널, 개략도, 다중 케이스 |
-| `run_single.py` | 490 | 단일 케이스 실행 + CSV 출력 |
-| `run_compare.py` | 676 | 다중 케이스 비교 실행 |
-| `gap_sim_config.py` | — | tkinter GUI 설정 도구 |
+| 파일 | 역할 |
+|------|------|
+| `common.py` | 공통 기반: 스펙, 기하, 물성, 열전달 엔진, j/f 상관식, Level 1/2 코일 모델, 자동 선택 엔진 |
+| `module_a.py` | Gap 열유동: 재순환, 복사, 전도, 혼합 손실 |
+| `module_b.py` | 비말동반: Weber, Monte Carlo, Flux, Risk |
+| `module_c.py` | 압력강하: f-factor, ΔP_core, ΔP_gap, 습면 보정 |
+| `visualize.py` | 가시화: 2×3 패널, 개략도, 다중 케이스 |
+| `run_single.py` | 단일 케이스 실행 + CSV 출력 |
+| `run_compare.py` | 다중 케이스 비교 실행 |
+| `gap_simulator_app.py` | Streamlit 웹 앱 (Level 2 탭 포함) |
 
 
 ## 4. 공통 기반 (common.py)
@@ -142,6 +147,47 @@ Nr개 Row를 순차 계산. 각 Row 출구가 다음 Row 입구.
 Row별 분할: A_total/Nr, A_i/Nr, R_wall×Nr, UA/Nr (h_o, h_i, σ 동일)
 
 효과: 부분 습면 전환 (앞열 습면, 뒷열 건면) 포착. Nr=1이면 Lumped와 동일.
+
+
+## 4.5 상관식 자동 선택 엔진
+
+`select_correlations(spec, geo, ref, side)` — 입력 스펙만으로 상관식 자동 매핑.
+
+선택 로직:
+- 공기 j: HX type → Layout → Fin type → Pt/Pl 분기
+- 공기 f: Pt/Pl ≤ 1.35 → Wang(2000), > 1.35 → KYW(1999)
+- 냉매 증발: D_ch 기반 → Gungor-Winterton(1986) 기본
+- 냉매 응축: Shah(1979) 고정
+- 단상: Gnielinski(1976) 고정
+- 핀효율: FT → Schmidt, MCHX → 직선핀
+
+범위 밖 조건 시 warnings 배열에 경고 추가.
+
+
+## 4.6 Level 2 코일 모델
+
+`compute_coil_v3(spec, geo, ref, T_air, RH, V, m_ref, x_in, side, N_seg, flow, evap_corr)`
+
+**Tube-by-Tube × Segment (CoilDesigner 수준)**:
+
+```
+16 tubes × 10 segments = 160 elements
+각 세그먼트에서:
+  ① h_i 계산 (건도 x 기반 자동 분기)
+  ② T_wall 반복 수렴 (Q_air = Q_ref, α=0.3)
+  ③ 습면/건면 판정 + Threlkeld ε-NTU
+  ④ 냉매 상태 업데이트 (x, T_ref)
+  ⑤ 공기 상태 업데이트 (Row간, 포화 보정)
+```
+
+**유동 배열**:
+- counter: 냉매 Row(Nr-1)→Row0, 공기 Row0→Row(Nr-1) (역류)
+- parallel: 냉매/공기 같은 방향 (병류)
+
+**T_wall 반복 수렴**:
+- T_wall = T_ref_base + Q × R_i
+- h_i도 매 반복마다 재계산 (Q ↔ Bo ↔ h_i 동시 수렴)
+- successive substitution, α=0.3, 20회 이내 수렴
 
 
 ## 5. Module A — Gap 열유동 (module_a.py)
@@ -330,13 +376,14 @@ JSON × N개 → analyze_case() × N → compare_fig_a/b/c()
 | 항목 | 등급 | 핵심 수치 |
 |------|------|----------|
 | 모듈 일관성 (A=B) | A | 0W 차이 (8조건 전수) |
-| 기하 계산 | A | 수기검증 일치 |
-| h_o / η_o / UA | A | 문헌 범위 내, R_o 지배적 61% |
-| ε-NTU (Threlkeld) | A | NTU 0.6~1.8 |
+| 기하 계산 | A | CoilDesigner 대비 -1.5% |
+| h_o / η_o / UA | A | 문헌 범위 내 |
+| dp (증발기/응축기) | A | CD 대비 -5~-7% |
+| Level 2 Q_total | B+ | CD 대비 0.69~0.78× (Shah/G-W) |
 | Gap 손실 | B+ | 전도 35% > 혼합 63% > 복사 2% |
 | 비말동반 | B+ | Weber 기반 4단계 점진 전환 |
 | 압력강하 | A | f_wet/f_dry 1.97 (문헌 1.7~2.3) |
-| Tube-Row Segment | B+ | 부분 습면 포착, Nr=1 fallback |
+| 상관식 자동 선택 | A | 10개 테스트 케이스 통과 |
 | 에너지 밸런스 | A | Q_sen+Q_lat = Q_total (0.00%) |
 
 **종합: A-**
@@ -346,12 +393,12 @@ JSON × N개 → analyze_case() × N → compare_fig_a/b/c()
 
 | 항목 | 현재 상태 | 필요 사항 |
 |------|----------|----------|
+| Level 2 Q 정합 | CD 대비 0.69~0.78× | 습면 모델 정밀화, Row간 공기 엔탈피 추적 |
 | 냉매 사이클 | T_sat 고정 | 압축기 모델 + 사이클 솔버 |
 | 팬 연동 | CMM 고정 | 팬 P-Q 곡선 + 반복 수렴 |
-| Row별 T_wall | 동일 T_sat | 냉매 회로 + tube-by-tube |
 | 공기 분배 | 균일 가정 | CFD 연동 |
-| Re > 5000 | 미검증 | 상관식 외삽 주의 |
-| 직접 상관식 | 미구현 (etype fallback) | corr_mode='direct' 개발 |
+| MCHX j-factor | Chang&Wang(1997) 간략화 | Chang&Wang(2006) 일반화 |
+| 습면 f-factor | 건면 f 사용 | 습면 보정 f_wet/f_dry |
 
 
 ## 12. JSON 설정 파일 구조

@@ -134,21 +134,65 @@ $$j_{inline} = j_{staggered} \times F_{layout}$$
 
 ## 3. 냉매측 HTC
 
-### 3.1 증발 — Shah (1982)
+### 3.1 증발 — Gungor & Winterton (1986) [기본값]
 
-$$h_{tp} = h_l \cdot \psi$$
+$$h_{tp} = E \cdot h_l + S \cdot h_{pool}$$
 
-$$h_l = 0.023 \cdot Re_l^{0.8} \cdot Pr_l^{0.4} \cdot \frac{k_l}{D_i}$$
+**Enhancement factor**: $E = 1 + 24000 \cdot Bo^{1.16} + 1.37 \cdot (1/X_{tt})^{0.86}$
 
-$$Co = \left(\frac{1-x}{x}\right)^{0.8} \sqrt{\frac{\rho_v}{\rho_l}}$$
+**Suppression factor**: $S = 1 / (1 + 1.15 \times 10^{-6} \cdot E^2 \cdot Re_l^{1.17})$
 
-$$\psi = \begin{cases} 1.8/Co^{0.8} & Co > 0.65 \\ \max(1.8/Co^{0.8},\; 0.6683 Co^{-0.2} + 1058 Bo^{0.7}) & Co \leq 0.65 \end{cases}$$
+**Martinelli**: $X_{tt} = \left(\frac{1-x}{x}\right)^{0.9} \left(\frac{\rho_v}{\rho_l}\right)^{0.5} \left(\frac{\mu_l}{\mu_v}\right)^{0.1}$
 
-### 3.2 응축 — Shah (1979)
+**Pool boiling** (Cooper 1984): $h_{pool} = 55 \cdot P_r^{0.12} \cdot (-\log_{10} P_r)^{-0.55} \cdot M^{-0.5} \cdot q''^{0.67}$
 
-$$h_{cond} = h_l \cdot (1 + 3.8/Z^{0.95})$$
+수평 보정 (Fr < 0.05): $E \leftarrow E \cdot Fr^{0.1-2Fr}$, $S \leftarrow S \cdot \sqrt{Fr}$
+
+### 3.2 증발 — Shah (1982) [선택 가능]
+
+$$h_{tp} = \psi \cdot h_{lo}$$
+
+**주의**: $h_{lo}$는 전체 유량이 액체일 때 기준 ($Re_{lo} = G \cdot D / \mu_l$)
+
+$$\psi_{cb} = 1.8 / N^{0.8}, \quad N = Co \; (Fr_l \geq 0.04)$$
+
+3-regime: N > 1 → max(ψ_nb, ψ_cb), N ≤ 1 → max(ψ_bs, ψ_cb)
+
+### 3.3 응축 — Shah (1979)
+
+$$h_{cond} = h_{lo} \cdot (1 + 3.8/Z^{0.95})$$
 
 $$Z = (1/x - 1)^{0.8} \cdot (P_{sat}/P_{crit})^{0.4}$$
+
+### 3.4 단상 — Gnielinski (1976)
+
+과열 증기 및 과냉 액체 공통:
+
+$$Nu = \frac{(f/8)(Re-1000)Pr}{1 + 12.7\sqrt{f/8}(Pr^{2/3}-1)}$$
+
+$$f = (0.790 \ln Re - 1.64)^{-2}$$
+
+유효: $2300 < Re < 5 \times 10^6$
+
+### 3.5 전이 블렌딩 (x = 0.90 ~ 1.05)
+
+$$h = (1-w) \cdot h_{2\phi} + w \cdot h_{vapor}, \quad w = \frac{x - 0.90}{0.15}$$
+
+### 3.6 T_wall 반복 수렴 (Level 2)
+
+에너지 보존: $Q_{air}(T_w) = Q_{ref} = (T_w - T_{ref,base}) / R_i$
+
+$$T_w^{(n+1)} = \alpha \cdot (T_{ref,base} + Q_{air}^{(n)} \cdot R_i) + (1-\alpha) \cdot T_w^{(n)}$$
+
+$\alpha = 0.3$ (successive substitution), 20회 이내 수렴. h_i도 매 반복마다 재계산 (Q ↔ Bo ↔ h_i 동시 수렴).
+
+### 3.7 습면 핀효율의 b-factor
+
+$$b = \frac{c_{p,s}}{c_{p,a}} = 1 + \frac{h_{fg} \cdot (dW_s/dT)}{c_{p,a}}$$
+
+**b는 핀효율 계산에만 반영**: $m_{wet} = \sqrt{2 h_o \cdot b / (k_{fin} \cdot \delta_f)}$
+
+$h_o$ 자체는 습면/건면 동일 (h_o × b 는 잘못된 공식)
 
 ---
 
@@ -271,11 +315,16 @@ $$\ln P_{sat} = \frac{-5800.2206}{T_K} + 1.3915 - 0.04864 T_K + 4.176 \times 10^
 |---|------|------|------|
 | 1 | Threlkeld, J.L. | Thermal Environmental Engineering | Prentice-Hall, 1970 |
 | 2 | Wang, C.C. et al. | Heat transfer and friction correlations for plain fin-and-tube heat exchangers | IJHMT 43(15), 2000 |
-| 3 | Wang, C.C. et al. | Airside performance of herringbone wavy fin-and-tube heat exchangers | IJHMT 40(4), 1997 |
+| 3 | Wang, C.C. et al. | Airside performance of herringbone wavy fin-and-tube heat exchangers | IJHMT 42, 1999 |
 | 4 | Wang, C.C. et al. | Heat transfer and friction correlation for compact louvered fin-and-tube heat exchangers | IJHMT 42(1), 1999 |
-| 5 | Shah, M.M. | A general correlation for heat transfer during film condensation inside pipes | IJHMT 22, 1979 |
-| 6 | Shah, M.M. | Chart correlation for saturated boiling heat transfer | ASHRAE Trans 88, 1982 |
-| 7 | Chang, Y.J. & Wang, C.C. | A generalized heat transfer correlation for louver fin geometry | IJHMT 40(3), 1997 |
-| 8 | Kays, W.M. & London, A.L. | Compact Heat Exchangers | McGraw-Hill, 1984 |
-| 9 | Schmidt, T.E. | Heat transfer calculations for extended surfaces | Refrigerating Eng. 57, 1949 |
-| 10 | ASHRAE | ASHRAE Handbook — Fundamentals, Ch.23 | ASHRAE, 2021 |
+| 5 | Wang, C.C. et al. | An experimental study of convective heat transfer from a slit fin surface | IJHMT 44, 2001 |
+| 6 | Shah, M.M. | A general correlation for heat transfer during film condensation inside pipes | IJHMT 22, 1979 |
+| 7 | Shah, M.M. | Chart correlation for saturated boiling heat transfer | ASHRAE Trans 88, 1982 |
+| 8 | Gungor, K.E. & Winterton, R.H.S. | A general correlation for flow boiling in tubes and annuli | IJHMT 29(3), 1986 |
+| 9 | Gnielinski, V. | New equations for heat and mass transfer in turbulent pipe and channel flow | Int. Chem. Eng. 16, 1976 |
+| 10 | Cooper, M.G. | Heat flow rates in saturated nucleate pool boiling | Advances in Heat Transfer 16, 1984 |
+| 11 | Kim, N.H., Youn, B. & Webb, R.L. | Air-side heat transfer and friction correlations for plain fin-and-tube HX | ASME JHT 121(3), 1999 |
+| 12 | Chang, Y.J. & Wang, C.C. | A generalized heat transfer correlation for louver fin geometry | IJHMT 40(3), 1997 |
+| 13 | Kays, W.M. & London, A.L. | Compact Heat Exchangers | McGraw-Hill, 1984 |
+| 14 | Schmidt, T.E. | Heat transfer calculations for extended surfaces | Refrigerating Eng. 57, 1949 |
+| 15 | ASHRAE | ASHRAE Handbook — Fundamentals, Ch.23 | ASHRAE, 2021 |
