@@ -251,43 +251,48 @@ def f_factor_ft_inline(spec, geo: dict, V_face: float, N_r: int = None) -> dict:
 
 def _f_fin_type_enhancement(spec, Re):
     """
-    핀 타입별 f-factor 강화 인자 (실험 데이터 보정)
+    핀 타입별 f-factor 강화 인자 — Nr 보정 포함
 
-    [보정 근거]
-    Plain:    1.00 — Wang (2000) IJHMT 43
-    Wavy:     1.40 — Wang (1999): f_wavy/f_plain ≈ 1.30~1.50
-    Slit:     1.50 — Wang (2001): 부분 교란, 중간 항력
-    Louver:   1.85 — Wang (1999), Yan & Sheen (2000)
+    [물리적 근거]
+    Enhanced fin은 경계층 재시작/교란을 유발.
+    Row 수(Nr) 증가 시 공기가 더 많은 교란 구간을 통과 → f 누적.
+    Kim & Cho (2015): E_f ∝ Nr^β (milky fin β=0.145 실측)
+    동일 메커니즘으로 slit/louver/wavy에도 Nr 보정 적용.
+
+    [보정 비율 — Nr=2 기준]
+    Plain:    1.00
+    Wavy:     1.25~1.40   × (Nr/2)^0.10
+    Louver:   1.50~1.90   × (Nr/2)^0.15
+    Slit:     1.30~1.70   × (Nr/2)^0.30
     """
     ft = getattr(spec, 'fin_type', 'plain').lower()
+    Nr = getattr(spec, 'tube_rows', 2)
 
     if ft == 'wavy':
         Xf = spec.wavy_height; Fp = spec.fin_pitch; alpha = spec.wavy_angle
-        # Yan & Sheen (2000): wavy j/f ≈ 최고 → j/f ≈ 0.95~1.0
-        # E_j=1.25 기준, E_f ≈ 1.25~1.30 → j/f ≈ 0.96~1.00
-        E_f = 1.10 + 0.23 * (Xf / Fp)**0.45 * (alpha / 20.0)**0.30
-        return np.clip(E_f, 1.15, 1.40)
+        E_base = 1.10 + 0.23 * (Xf / Fp)**0.45 * (alpha / 20.0)**0.30
+        E_base = np.clip(E_base, 1.15, 1.40)
+        E_f = E_base * max(Nr/2, 1)**0.10
+        return np.clip(E_f, 1.10, 1.80)
 
     elif ft in ('louvered', 'louver'):
         Lp = spec.ft_louver_pitch; Fp = spec.fin_pitch; theta = spec.ft_louver_angle
-        # Yan & Sheen: louver f 19.9~8.2% > wavy f
-        # Wang (1999): j/f ≈ 0.75~0.85 for louver
-        # E_j=1.40 기준, E_f ≈ 1.65~1.87 → j/f ≈ 0.75~0.85
-        E_f = 1.25 + 0.50 * (Lp / Fp)**0.35 * (theta / 30.0)**0.40
-        return np.clip(E_f, 1.50, 1.90)
+        E_base = 1.25 + 0.50 * (Lp / Fp)**0.35 * (theta / 30.0)**0.40
+        E_base = np.clip(E_base, 1.50, 1.90)
+        E_f = E_base * max(Nr/2, 1)**0.15
+        return np.clip(E_f, 1.40, 2.50)
 
     elif ft == 'slit':
         Ns = spec.slit_num; Sh = spec.slit_height; Fp = spec.fin_pitch
-        E_f = 1.25 + 0.18 * Ns**0.25 * (Sh / Fp)**0.30
-        return np.clip(E_f, 1.30, 1.70)
+        E_base = 1.25 + 0.18 * Ns**0.25 * (Sh / Fp)**0.30
+        E_base = np.clip(E_base, 1.30, 1.70)
+        E_f = E_base * max(Nr/2, 1)**0.30
+        return np.clip(E_f, 1.25, 2.80)
 
     elif ft == 'milky':
         Ns = getattr(spec, 'strip_num', 6)
         Sh = getattr(spec, 'strip_height', 1.2e-3)
         Fp = spec.fin_pitch
-        Nr = getattr(spec, 'tube_rows', 2)
-        # Kim & Cho (2015): f_ratio = E_f_base × Nr^0.145
-        # Nr=1→2.18, Nr=2→2.41, Nr=3→2.65 (실측)
         E_f_base = 1.82 + 0.25 * Ns**0.25 * (Sh / Fp)**0.25
         E_f = E_f_base * max(Nr, 1)**0.145
         return np.clip(E_f, 1.80, 2.80)
