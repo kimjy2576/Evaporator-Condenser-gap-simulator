@@ -1456,60 +1456,127 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
         def get_hsat(T): W=get_Wsat(T); return 1006*T+W*(2501000+1860*T)
 
     def calc_seg(T_air, W_air, RH_air, x_ref, T_ref, m_air):
+        """단일 세그먼트 — T_wall 반복 수렴 (Newton-Raphson식)
+
+        에너지 보존: Q_air(T_wall) = Q_ref = (T_wall - T_ref_base) × h_i × A_i
+        → T_wall을 찾아 Q_air = Q_ref 동시 만족
+        """
         Q_est = min(m_air*cp_air*max(abs(T_air-T_sat),0.1)*0.1, m_ref*h_fg*0.05)
         h_i, phase = refrigerant_htc_auto(spec, geo, ref, side, x_ref, m_ref, max(Q_est,1.0))
-        T_wall = T_sat if (phase in ('two_phase','transition') and x_ref<=1.0) else T_ref
-        R_o=1.0/(eta_o*h_o*A_o_seg+1e-9); R_i=1.0/(h_i*A_i_seg+1e-9)
-        UA=1.0/(R_o+R_wall_seg+R_i)
-        NTU=UA/(m_air*cp_air+1e-9); eps=1.0-np.exp(-min(NTU,7.0))
-        T_dp=get_Tdp(T_air,RH_air); is_wet=(T_dp>T_wall) and (side=='evap')
-        if is_wet:
-            h_a=get_h(T_air,RH_air); h_sw=get_hsat(T_wall); W_sw=get_Wsat(T_wall)
-            T_mid=(T_air+T_wall)/2; dWs=(get_Wsat(T_mid+0.5)-get_Wsat(T_mid))/0.5
-            b=max(1.0+h_fg_lat*dWs/cp_air, 1.0)
-            k_f=230.0 if getattr(spec,'fin_material','Al')=='Al' else 386.0
-            df=getattr(spec,'fin_thickness',0.1e-3)
-            m_w=np.sqrt(2*h_o*b/(k_f*df+1e-9))
-            if hasattr(spec,'tube_do'):
-                r_i=spec.tube_do/2; Xm=spec.tube_pitch_t/2
-                XL=np.sqrt((spec.tube_pitch_t/2)**2+spec.tube_pitch_l**2)/2
-                r_eq=max(1.27*Xm*np.sqrt(max(XL/Xm-0.3,0.01)),r_i*1.01)
-                phi=(r_eq/r_i-1)*(1+0.35*np.log(r_eq/r_i)); mL=m_w*r_i*phi
-            else: mL=m_w*getattr(spec,'slab_pitch',8e-3)/2
-            eta_fw=np.tanh(mL)/(mL+1e-9)
-            eta_ow=max(1.0-A_fin_ratio*(1-eta_fw),0.2)
-            UA_w=1.0/(1.0/(eta_ow*h_o*A_o_seg)+R_wall_seg+R_i)
-            eps_w=1.0-np.exp(-min(UA_w/(m_air*cp_air+1e-9),7.0))
-            Q=max(eps_w*m_air*(h_a-h_sw),0.0)
-            W_o=max(W_air-eps_w*(W_air-W_sw),W_sw); T_o=T_air-eps_w*(T_air-T_wall)
+
+        # 냉매 기준 온도 (T_wall의 하한)
+        if phase in ('two_phase','transition') and x_ref <= 1.0:
+            T_ref_base = T_sat
         else:
-            dT=max(T_air-T_wall,0.0) if side=='evap' else max(T_wall-T_air,0.0)
-            Q=eps*m_air*cp_air*dT
-            T_o=T_air-Q/(m_air*cp_air) if side=='evap' and Q>0 else \
-                T_air+Q/(m_air*cp_air) if side=='cond' and Q>0 else T_air
-            T_o=np.clip(T_o,-40,120); W_o=W_air
-        x_n=x_ref; T_n=T_ref
-        if phase in ('two_phase','transition') and x_ref<=1.0:
-            dx=Q/(m_ref*h_fg+1e-9)
-            if side=='evap':
-                x_n=x_ref+dx
-                if x_n>1.0 and x_ref<1.0:
-                    frac=np.clip((1.0-x_ref)/(dx+1e-9),0,1)
-                    T_n=T_sat+Q*(1-frac)/(m_ref*cp_v+1e-9); x_n=1.0+(T_n-T_sat)*cp_v/h_fg
-                else: T_n=T_sat
+            T_ref_base = T_ref
+
+        R_i = 1.0 / (h_i * A_i_seg + 1e-9)
+
+        # ── 공기측 Q 계산 함수 (T_wall 의존) ──
+        def Q_air_func(Tw):
+            """주어진 T_wall에서 공기측 Q 계산"""
+            R_o_loc = 1.0/(eta_o*h_o*A_o_seg+1e-9)
+            UA_loc = 1.0/(R_o_loc + R_wall_seg + R_i)
+            NTU_loc = UA_loc/(m_air*cp_air+1e-9)
+            eps_loc = 1.0-np.exp(-min(NTU_loc,7.0))
+
+            T_dp_loc = get_Tdp(T_air, RH_air)
+            wet = (T_dp_loc > Tw) and (side == 'evap')
+
+            if wet:
+                h_a = get_h(T_air, RH_air)
+                h_sw = get_hsat(Tw); W_sw = get_Wsat(Tw)
+                T_mid = (T_air + Tw) / 2
+                dWs = (get_Wsat(T_mid+0.5) - get_Wsat(T_mid)) / 0.5
+                b_loc = max(1.0 + h_fg_lat*dWs/cp_air, 1.0)
+                k_f = 230.0 if getattr(spec,'fin_material','Al')=='Al' else 386.0
+                df = getattr(spec,'fin_thickness',0.1e-3)
+                m_w = np.sqrt(2*h_o*b_loc/(k_f*df+1e-9))
+                if hasattr(spec,'tube_do'):
+                    ri=spec.tube_do/2; Xm=spec.tube_pitch_t/2
+                    XL=np.sqrt((spec.tube_pitch_t/2)**2+spec.tube_pitch_l**2)/2
+                    r_eq=max(1.27*Xm*np.sqrt(max(XL/Xm-0.3,0.01)),ri*1.01)
+                    phi=(r_eq/ri-1)*(1+0.35*np.log(r_eq/ri)); mL=m_w*ri*phi
+                else: mL=m_w*getattr(spec,'slab_pitch',8e-3)/2
+                eta_fw = np.tanh(mL)/(mL+1e-9)
+                eta_ow = max(1.0-A_fin_ratio*(1-eta_fw),0.2)
+                UA_w = 1.0/(1.0/(eta_ow*h_o*A_o_seg)+R_wall_seg+R_i)
+                eps_w = 1.0-np.exp(-min(UA_w/(m_air*cp_air+1e-9),7.0))
+                Q_a = max(eps_w*m_air*(h_a - h_sw), 0.0)
+                W_o = max(W_air - eps_w*(W_air - W_sw), W_sw)
+                T_o = T_air - eps_w*(T_air - Tw)
             else:
-                x_n=x_ref-dx
-                if x_n<0 and x_ref>0:
-                    frac=np.clip(x_ref/(dx+1e-9),0,1)
-                    T_n=T_sat-Q*(1-frac)/(m_ref*cp_l+1e-9); x_n=-(T_sat-T_n)*cp_l/h_fg
-                else: T_n=T_sat
-        elif phase=='superheated':
-            dTr=Q/(m_ref*cp_v+1e-9); T_n=T_ref+dTr if side=='evap' else T_ref-dTr
-            x_n=1.0+(T_n-T_sat)*cp_v/h_fg
-        elif phase=='subcooled':
-            dTr=Q/(m_ref*cp_l+1e-9); T_n=T_ref+dTr if side=='evap' else T_ref-dTr
-            x_n=-(T_sat-T_n)*cp_l/h_fg
-        return Q,T_o,W_o,get_RH(T_o,W_o),x_n,T_n,phase,h_i,T_wall,is_wet
+                if side == 'evap':
+                    dT = max(T_air - Tw, 0.0)
+                else:
+                    dT = max(Tw - T_air, 0.0)
+                Q_a = eps_loc*m_air*cp_air*dT
+                T_o = T_air-Q_a/(m_air*cp_air) if side=='evap' and Q_a>0 else \
+                      T_air+Q_a/(m_air*cp_air) if side=='cond' and Q_a>0 else T_air
+                T_o = np.clip(T_o, -40, 120)
+                W_o = W_air; W_sw = get_Wsat(Tw) if Tw > -40 else 0
+            return Q_a, T_o, W_o, wet
+
+        # ── T_wall 반복 수렴 (successive substitution + relaxation) ──
+        # 원리: Q_air(T_wall) = Q_ref = (T_wall - T_ref_base) / R_i
+        #   → T_wall = T_ref_base + Q_air(T_wall) × R_i
+        T_wall = (T_ref_base + T_air) / 2  # 초기값: 중간점
+        Q_converged = 0.0
+        T_o_conv = T_air; W_o_conv = W_air; is_wet_conv = False
+        alpha = 0.3  # 완화 계수 (0.3 = 보수적 수렴)
+
+        for _iter in range(20):
+            Q_a, T_o_a, W_o_a, wet_a = Q_air_func(T_wall)
+
+            # 목표 T_wall: T_ref_base + Q_air × R_i
+            T_wall_target = T_ref_base + Q_a * R_i
+            # T_wall 범위 제한
+            T_wall_target = np.clip(T_wall_target, T_ref_base,
+                                    T_air if side == 'evap' else T_ref_base + 80)
+
+            # 완화 업데이트
+            T_wall_new = alpha * T_wall_target + (1 - alpha) * T_wall
+
+            if abs(T_wall_new - T_wall) < 0.05:  # 0.05°C 이내 수렴
+                Q_converged = Q_a
+                T_o_conv = T_o_a; W_o_conv = W_o_a; is_wet_conv = wet_a
+                T_wall = T_wall_new
+                break
+
+            T_wall = T_wall_new
+            Q_converged = Q_a
+            T_o_conv = T_o_a; W_o_conv = W_o_a; is_wet_conv = wet_a
+
+        Q = Q_converged
+
+        # ── 냉매 상태 업데이트 ──
+        x_n = x_ref; T_n = T_ref
+        if phase in ('two_phase','transition') and x_ref <= 1.0:
+            dx = Q/(m_ref*h_fg+1e-9)
+            if side == 'evap':
+                x_n = x_ref + dx
+                if x_n > 1.0 and x_ref < 1.0:
+                    frac = np.clip((1.0-x_ref)/(dx+1e-9), 0, 1)
+                    T_n = T_sat + Q*(1-frac)/(m_ref*cp_v+1e-9)
+                    x_n = 1.0 + (T_n-T_sat)*cp_v/h_fg
+                else: T_n = T_sat
+            else:
+                x_n = x_ref - dx
+                if x_n < 0 and x_ref > 0:
+                    frac = np.clip(x_ref/(dx+1e-9), 0, 1)
+                    T_n = T_sat - Q*(1-frac)/(m_ref*cp_l+1e-9)
+                    x_n = -(T_sat-T_n)*cp_l/h_fg
+                else: T_n = T_sat
+        elif phase == 'superheated':
+            dTr = Q/(m_ref*cp_v+1e-9)
+            T_n = T_ref+dTr if side=='evap' else T_ref-dTr
+            x_n = 1.0+(T_n-T_sat)*cp_v/h_fg
+        elif phase == 'subcooled':
+            dTr = Q/(m_ref*cp_l+1e-9)
+            T_n = T_ref+dTr if side=='evap' else T_ref-dTr
+            x_n = -(T_sat-T_n)*cp_l/h_fg
+
+        return Q, T_o_conv, W_o_conv, get_RH(T_o_conv, W_o_conv), x_n, T_n, phase, h_i, T_wall, is_wet_conv
 
     def build_tube_order(row_seq):
         order = []
@@ -1574,6 +1641,10 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
                 if Q_lat_per_row[row] > 0:
                     dW = Q_lat_per_row[row]/(m_a*h_fg_lat+1e-9)
                     W_a = max(W_a-dW, get_Wsat(T_sat) if side=='evap' else 0)
+                # ★ 포화 보정: W > Wsat(T)이면 과포화 → 응결
+                W_sat_T = get_Wsat(T_a)
+                if W_a > W_sat_T:
+                    W_a = W_sat_T
         final = (all_segs, tube_results, Q_per_row, Q_lat_per_row, x_ref, T_ref, T_a, W_a)
 
     all_segs, tube_results, Q_per_row, _, x_ref, T_ref, T_air_out, W_air_out = final
