@@ -1520,7 +1520,7 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
             T_mid = (T_air + T_wall) / 2
             W_s1 = get_Wsat(T_mid); W_s2 = get_Wsat(T_mid + 0.5)
             dWs_dT = (W_s2 - W_s1) / 0.5
-            b = np.clip(1.0 + h_fg_lat * dWs_dT / cp_air, 1.0, 8.0)
+            b = max(1.0 + h_fg_lat * dWs_dT / cp_air, 1.0)  # 물리값 그대로
 
             # ★ 정석 Threlkeld: h_o 자체는 불변, b는 η_fin_wet에만 반영
             # m_wet = sqrt(2×h_o×b/(k×δ)) → η_fin_wet < η_fin_dry
