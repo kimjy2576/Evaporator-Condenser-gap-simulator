@@ -1123,36 +1123,30 @@ def compute_coil_performance_segmented(spec, geo: dict, ua_result: dict,
 def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
                     m_ref, x_in, side='evap'):
     """
-    Level 1 Row-by-Row + Phase-zone 세그먼트 계산
+    Level 1 Row-by-Row + Phase-zone 세그먼트 계산 (v2.1)
 
-    현재 모델(v1)과의 차이:
-    - 냉매 건도(x) Row별 추적
-    - x 기반 h_i 자동 분기 (이상/과열/과냉)
-    - T_wall = T_sat (이상) / T_ref (과열/과냉)
-    - Row 중간 상 전이 처리
+    [v2.0 대비 개선]
+    - 공기밀도 ρ(T) 보정 (1.18 고정 → 이상기체)
+    - b-factor 상한 3.5 (습면 UA 과대 방지)
+    - Q_row 상한 = dx_max × m_ref × h_fg (Row당 건도 변화 제한)
+      → Row간 열량 분배 정상화, 과열 진입 Row 특정
 
     Parameters
     ----------
-    spec    : FinTubeSpec or MCHXSpec
-    geo     : geometry dict
-    ref     : RefrigerantState
-    T_air_in: 입구 공기 온도 [°C]
-    RH_in   : 입구 상대습도 [-]
-    V_face  : 전면 풍속 [m/s]
-    m_ref   : 냉매 질량유량 [kg/s]
-    x_in    : 입구 건도 (0~1: 이상, >1: 과열, <0: 과냉)
-    side    : 'evap' or 'cond'
-
-    Returns
-    -------
-    dict with: Q_total, Q_sen, Q_lat, T_air_out, x_out, T_ref_out,
-               row_details, phase_summary
+    spec, geo, ref : 기하/냉매 스펙
+    T_air_in, RH_in, V_face : 공기 조건
+    m_ref : 냉매 질량유량 [kg/s]
+    x_in  : 입구 건도 (0~1: 이상, >1: 과열, <0: 과냉)
+    side  : 'evap' or 'cond'
     """
     Nr = getattr(spec, 'tube_rows', getattr(spec, 'n_slabs', 1))
     Nr = max(Nr, 1)
+    Nt = getattr(spec, 'tube_cols', 1)
 
-    rho_air = 1.18; cp_air = 1006.0; P_atm = 101325.0
-    h_fg_lat = 2501000.0  # 수증기 잠열
+    cp_air = 1006.0; P_atm = 101325.0
+    h_fg_lat = 2501000.0
+    B_MAX = 3.5          # b-factor 상한
+    DX_MAX_PER_TUBE = 0.12  # 튜브 1개당 최대 건도 변화
 
     try:
         from CoolProp.HumidAirProp import HAPropsSI
@@ -1163,22 +1157,24 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
     # ── 냉매 물성 ──
     rf = ref.refrigerant
     if side == 'evap':
-        T_sat = ref.T_sat_evap
-        T_sat_K = T_sat + 273.15
+        T_sat = ref.T_sat_evap; T_sat_K = T_sat + 273.15
         h_fg = ref.h_fg_evap
     else:
-        T_sat = ref.T_sat_cond
-        T_sat_K = T_sat + 273.15
+        T_sat = ref.T_sat_cond; T_sat_K = T_sat + 273.15
         h_fg = ref.h_cond_v - ref.h_cond_l
 
     cp_v = CP.PropsSI('C', 'T', T_sat_K, 'Q', 1, rf)
     cp_l = CP.PropsSI('C', 'T', T_sat_K, 'Q', 0, rf)
 
-    # ── 공기측 h_o (전체 동일) ──
+    # Row당 최대 Q (건도 변화 제한 기반)
+    # 한 Row = Nt개 튜브 직렬 → dx_max = DX_MAX_PER_TUBE × Nt
+    dx_max_row = DX_MAX_PER_TUBE * Nt
+    Q_max_2ph = dx_max_row * m_ref * h_fg  # 이상 영역 Row당 Q 상한
+
+    # ── 공기측 h_o ──
     h_o = air_htc_ft(spec, geo, V_face) if spec.hx_type == 'FT' \
           else air_htc_mchx(spec, geo, V_face)
 
-    # η_o 수렴
     eta_o = geo['eta_o']
     for _ in range(5):
         eta_o_new = _update_eta_o(spec, geo, h_o)
@@ -1189,7 +1185,6 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
     A_o_row = geo['A_total'] / Nr
     A_i_row = geo['A_i'] / Nr
     R_wall_row = geo['R_wall'] * Nr
-    m_air = rho_air * V_face * spec.W * spec.H
 
     # ── 습공기 함수 ──
     if _CP:
@@ -1216,43 +1211,43 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
         def get_Wsat(T): return get_W(T, 1.0)
         def get_hsat(T): W=get_Wsat(T); return 1006*T+W*(2501000+1860*T)
 
-    # ── Row별 순차 계산 ──
+    # ── 초기 상태 ──
     T_air = T_air_in
     RH_air = RH_in
     W_air = get_W(T_air, RH_air)
     x_ref = x_in
-    T_ref = T_sat  # 이상이면 T_sat, 과열이면 나중에 업데이트
-
+    T_ref = T_sat
     if x_ref > 1.0:
-        # 과열도 → 온도 (간략: x-1.0 비율 사용)
         T_ref = T_sat + (x_ref - 1.0) * h_fg / cp_v
     elif x_ref < 0:
-        T_ref = T_sat + x_ref * h_fg / cp_l  # 과냉
+        T_ref = T_sat + x_ref * h_fg / cp_l
 
     rows = []
     Q_total = 0; Q_sen_total = 0; Q_lat_total = 0
 
     for i_row in range(Nr):
-        # ── Q 추정 (Shah Bo 항 안정화) ──
+        # ── ρ(T) 보정 ──
+        rho_air = P_atm / (287.05 * (T_air + 273.15))
+        m_air = rho_air * V_face * spec.W * spec.H
+
+        # ── Q 추정 (Bo 안정화) ──
         T_wall_est = T_sat if x_ref <= 1.0 else T_ref
         dT_est = max(T_air - T_wall_est, 0.1) if side == 'evap' else max(T_wall_est - T_air, 0.1)
-        Q_est = min(m_air * cp_air * dT_est * 0.3, m_ref * h_fg * 0.3)  # 보수적 추정
+        Q_est = min(m_air * cp_air * dT_est * 0.3, m_ref * h_fg * 0.3)
 
-        # ── 냉매측 h_i (건도 기반 자동 분기) ──
+        # ── h_i (건도 기반) ──
         h_i, phase = refrigerant_htc_auto(spec, geo, ref, side, x_ref, m_ref, Q_est)
 
-        # ── T_wall 결정 ──
+        # ── T_wall ──
         if phase in ('two_phase', 'transition') and x_ref <= 1.0:
             T_wall = T_sat
         else:
-            T_wall = T_ref  # 과열: T_ref, 과냉: T_ref
+            T_wall = T_ref
 
-        # ── UA (이 Row) ──
+        # ── UA ──
         R_o = 1.0 / (eta_o * h_o * A_o_row + 1e-9)
         R_i = 1.0 / (h_i * A_i_row + 1e-9)
         UA_row = 1.0 / (R_o + R_wall_row + R_i)
-
-        # ── ε-NTU ──
         NTU = UA_row / (m_air * cp_air)
         eps = 1.0 - np.exp(-NTU)
 
@@ -1261,21 +1256,21 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
         is_wet = (T_dp_air > T_wall) and (side == 'evap')
 
         if is_wet:
-            # 습면 Threlkeld
             h_air_in = get_h(T_air, RH_air)
             h_sat_w = get_hsat(T_wall)
             W_sat_w = get_Wsat(T_wall)
 
-            # 습면 보정 b
+            # b-factor (상한 적용)
             T_mid = (T_air + T_wall) / 2
             W_s1 = get_Wsat(T_mid)
             W_s2 = get_Wsat(T_mid + 0.5)
             dWs_dT = (W_s2 - W_s1) / 0.5
             b = 1.0 + h_fg_lat * dWs_dT / cp_air
-            b = max(b, 1.0)
+            b = np.clip(b, 1.0, B_MAX)  # ★ 상한 제한
 
             h_o_wet = h_o * b
-            eta_o_wet = 1.0 - (geo['A_fin']/(Nr*geo['A_total']/Nr+1e-9) if geo['A_total']>0 else 0.9) * (1 - eta_o * b / max(b, 1.01))
+            A_fin_ratio = geo['A_fin'] / (geo['A_total'] + 1e-9)
+            eta_o_wet = 1.0 - A_fin_ratio * (1 - eta_o)
             eta_o_wet = max(min(eta_o_wet, 1.0), 0.3)
             UA_o_wet = eta_o_wet * h_o_wet * A_o_row
             UA_wet = 1.0 / (1.0/UA_o_wet + R_wall_row + R_i)
@@ -1286,47 +1281,55 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
             W_out = W_air - eps_wet * (W_air - W_sat_w)
             W_out = max(W_out, W_sat_w)
             T_out = T_air - eps_wet * (T_air - T_wall)
-            Q_lat = m_air * (W_air - W_out) * h_fg_lat
-            Q_sen = max(Q_row - Q_lat, 0.0)
+            Q_lat_row = m_air * (W_air - W_out) * h_fg_lat
+            Q_sen_row = max(Q_row - Q_lat_row, 0.0)
         else:
-            # 건면
             if side == 'evap':
-                dT = max(T_air - T_wall, 0.0)  # 공기→냉매: T_air > T_wall일 때만
+                dT = max(T_air - T_wall, 0.0)
             else:
-                dT = max(T_wall - T_air, 0.0)  # 냉매→공기: T_wall > T_air일 때만
+                dT = max(T_wall - T_air, 0.0)
             Q_row = eps * m_air * cp_air * dT
             if Q_row > 0:
-                T_out = T_air - Q_row / (m_air * cp_air) if side == 'evap' else \
-                        T_air + Q_row / (m_air * cp_air)
+                T_out = T_air - Q_row/(m_air*cp_air) if side=='evap' else \
+                        T_air + Q_row/(m_air*cp_air)
             else:
-                T_out = T_air  # 열전달 없으면 온도 변화 없음
+                T_out = T_air
             T_out = np.clip(T_out, -40, 120)
             W_out = W_air
-            Q_sen = Q_row
-            Q_lat = 0.0
+            W_sat_w = get_Wsat(T_wall) if T_wall > -40 else 0
+            Q_sen_row = Q_row
+            Q_lat_row = 0.0
+
+        # ── ★ Q 상한 적용 (이상 영역: dx 제한) ──
+        if phase in ('two_phase', 'transition') and x_ref <= 1.0:
+            if Q_row > Q_max_2ph:
+                ratio = Q_max_2ph / (Q_row + 1e-9)
+                Q_row *= ratio
+                Q_sen_row *= ratio
+                Q_lat_row *= ratio
+                # 공기 출구 보정
+                if is_wet:
+                    T_out = T_air - ratio * eps_wet * (T_air - T_wall)
+                    W_out = W_air - ratio * eps_wet * (W_air - W_sat_w)
+                    W_out = max(W_out, W_sat_w)
+                else:
+                    T_out = T_air - ratio * eps * (T_air - T_wall) if side=='evap' else \
+                            T_air + ratio * eps * (T_wall - T_air)
+                    T_out = np.clip(T_out, -40, 120)
 
         # ── 냉매 상태 업데이트 ──
-        if phase == 'two_phase' or (phase == 'transition' and x_ref < 1.0):
+        if phase in ('two_phase', 'transition') and x_ref <= 1.0:
             dx = Q_row / (m_ref * h_fg + 1e-9)
-            if side == 'cond':
-                x_new = x_ref - dx  # 응축: x 감소
-            else:
-                x_new = x_ref + dx  # 증발: x 증가
+            x_new = x_ref + dx if side == 'evap' else x_ref - dx
 
-            # 과열 진입 체크 (증발기)
             if side == 'evap' and x_new > 1.0 and x_ref < 1.0:
-                frac_2ph = (1.0 - x_ref) / (dx + 1e-9)
-                frac_2ph = np.clip(frac_2ph, 0, 1)
-                Q_2ph = frac_2ph * Q_row
-                Q_sh = Q_row - Q_2ph
+                frac_2ph = np.clip((1.0 - x_ref) / (dx + 1e-9), 0, 1)
+                Q_sh = Q_row * (1 - frac_2ph)
                 T_ref = T_sat + Q_sh / (m_ref * cp_v + 1e-9)
                 x_ref = 1.0 + (T_ref - T_sat) * cp_v / h_fg
-            # 과냉 진입 체크 (응축기)
             elif side == 'cond' and x_new < 0 and x_ref > 0:
-                frac_2ph = x_ref / (dx + 1e-9)
-                frac_2ph = np.clip(frac_2ph, 0, 1)
-                Q_2ph = frac_2ph * Q_row
-                Q_sc = Q_row - Q_2ph
+                frac_2ph = np.clip(x_ref / (dx + 1e-9), 0, 1)
+                Q_sc = Q_row * (1 - frac_2ph)
                 T_ref = T_sat - Q_sc / (m_ref * cp_l + 1e-9)
                 x_ref = -(T_sat - T_ref) * cp_l / h_fg
             else:
@@ -1335,31 +1338,25 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
 
         elif phase == 'superheated':
             dT_ref = Q_row / (m_ref * cp_v + 1e-9)
-            if side == 'cond':
-                T_ref -= dT_ref
-            else:
-                T_ref += dT_ref
+            T_ref = T_ref + dT_ref if side == 'evap' else T_ref - dT_ref
             x_ref = 1.0 + (T_ref - T_sat) * cp_v / h_fg
 
         elif phase == 'subcooled':
             dT_ref = Q_row / (m_ref * cp_l + 1e-9)
-            if side == 'cond':
-                T_ref -= dT_ref
-            else:
-                T_ref += dT_ref
+            T_ref = T_ref + dT_ref if side == 'evap' else T_ref - dT_ref
             x_ref = -(T_sat - T_ref) * cp_l / h_fg
 
-        # ── 공기 출구 업데이트 ──
+        # ── 공기 업데이트 ──
         T_air = T_out
         W_air = W_out
         RH_air = get_RH(T_air, W_air)
 
         Q_total += Q_row
-        Q_sen_total += Q_sen
-        Q_lat_total += Q_lat
+        Q_sen_total += Q_sen_row
+        Q_lat_total += Q_lat_row
 
         rows.append(dict(
-            row=i_row, phase=phase, Q=Q_row, Q_sen=Q_sen, Q_lat=Q_lat,
+            row=i_row, phase=phase, Q=Q_row, Q_sen=Q_sen_row, Q_lat=Q_lat_row,
             h_i=h_i, h_o=h_o, eta_o=eta_o, UA=UA_row,
             T_air_in=T_air_in if i_row==0 else rows[-1]['T_air_out'],
             T_air_out=T_out, T_wall=T_wall,
@@ -1367,32 +1364,32 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
             x_out=x_ref, T_ref=T_ref, is_wet=is_wet,
         ))
 
-    # ── 전체 결과 ──
+    # ── 결과 ──
     SHR = Q_sen_total / (Q_total + 1e-9)
-
-    # 상 분포
     n_2ph = sum(1 for r in rows if r['phase'] == 'two_phase')
     n_sh  = sum(1 for r in rows if r['phase'] == 'superheated')
     n_sc  = sum(1 for r in rows if r['phase'] == 'subcooled')
     n_tr  = sum(1 for r in rows if r['phase'] == 'transition')
 
+    rho_in = P_atm / (287.05 * (T_air_in + 273.15))
+    m_air_in = rho_in * V_face * spec.W * spec.H
+
     return dict(
         Q_total=Q_total, Q_sen=Q_sen_total, Q_lat=Q_lat_total, SHR=SHR,
         T_out=T_air, W_out=W_air, T_ref_out=T_ref, x_out=x_ref,
-        m_dot=m_air, m_ref=m_ref,
+        m_dot=m_air_in, m_ref=m_ref,
         rows=rows, Nr=Nr,
         phase_summary=dict(two_phase=n_2ph, superheated=n_sh,
                           subcooled=n_sc, transition=n_tr),
-        # 호환용
-        eps=Q_total/(m_air*cp_air*abs(T_air_in-T_sat)+1e-9) if abs(T_air_in-T_sat)>0.1 else 0,
+        eps=Q_total/(m_air_in*cp_air*abs(T_air_in-T_sat)+1e-9) if abs(T_air_in-T_sat)>0.1 else 0,
         NTU=0, UA_eff=0, eta_o_eff=eta_o,
         T_dp=get_Tdp(T_air_in, RH_in),
         h_in=get_h(T_air_in, RH_in), h_out=get_h(T_air, RH_air),
         h_sat_w=get_hsat(T_sat),
         W_in=get_W(T_air_in, RH_in),
         is_wet=any(r['is_wet'] for r in rows),
-        q_cond=sum(m_air*(r.get('W_air_in', get_W(T_air_in,RH_in))-W_air)*1000 for r in [rows[-1]]) if Q_lat_total > 0 else 0,
-        dehumid_rate=0,
+        q_cond=m_air_in*(get_W(T_air_in,RH_in)-W_air)*1000 if Q_lat_total > 0 else 0,
+        dehumid_rate=m_air_in*(get_W(T_air_in,RH_in)-W_air)*3600*1000 if Q_lat_total > 0 else 0,
         eps_dry=0, NTU_dry=0, UA_dry=0,
     )
 
