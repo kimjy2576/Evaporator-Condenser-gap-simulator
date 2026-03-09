@@ -138,9 +138,9 @@ with st.sidebar:
         evap_hx_type = st.radio("HX 타입", ["FT","MCHX"], horizontal=True, key='evap_hx_type')
         # 공통: 외형 치수
         c1,c2,c3 = st.columns(3)
-        with c1: evap_W = st.number_input("W[mm]",50,1000,300,key="eW")
-        with c2: evap_H = st.number_input("H[mm]",50,800,250,key="eH")
-        with c3: evap_D = st.number_input("D[mm]",10,200,45,key="eD")
+        with c1: evap_W = st.number_input("W[mm]",0,1000,300,key="eW")
+        with c2: evap_H = st.number_input("H[mm]",0,800,250,key="eH")
+        with c3: evap_D = st.number_input("D[mm]",0,200,45,key="eD")
 
         if evap_hx_type == "FT":
             c1,c2 = st.columns(2)
@@ -153,28 +153,28 @@ with st.sidebar:
             # 핀/튜브 기하
             c1,c2 = st.columns(2)
             with c1:
-                evap_fpi = st.slider("FPI",6,30,14,key='efpi')
-                e_fin_t = st.number_input("핀 두께 [mm]",0.05,0.30,0.10,0.01,key='e_fin_t')
-                e_Do = st.number_input("튜브 Do [mm]",5.0,15.0,9.52,0.01,key='e_Do')
+                evap_fpi = st.slider("FPI",0,30,14,key='efpi')
+                e_fin_t = st.number_input("핀 두께 [mm]",0.0,0.30,0.10,0.01,key='e_fin_t')
+                e_Do = st.number_input("튜브 Do [mm]",0.0,15.0,9.52,0.01,key='e_Do')
             with c2:
-                e_Di = st.number_input("튜브 Di [mm]",4.0,14.0,8.52,0.01,key='e_Di')
-                e_drain = st.number_input("드레인 높이 [mm]",5.0,50.0,25.0,1.0,key='e_drain')
+                e_Di = st.number_input("튜브 Di [mm]",0.0,14.0,8.52,0.01,key='e_Di')
+                e_drain = st.number_input("드레인 높이 [mm]",0.0,50.0,25.0,1.0,key='e_drain')
             c1,c2 = st.columns(2)
-            with c1: e_Pt = st.number_input("Pitch_t [mm]",15.0,40.0,25.4,0.1,key='e_Pt')
-            with c2: e_Pl = st.number_input("Pitch_l [mm]",15.0,40.0,22.0,0.1,key='e_Pl')
+            with c1: e_Pt = st.number_input("Pitch_t [mm]",0.0,40.0,25.4,0.1,key='e_Pt')
+            with c2: e_Pl = st.number_input("Pitch_l [mm]",0.0,40.0,22.0,0.1,key='e_Pl')
             # 핀 타입별 상세
             if evap_fin in ['wavy']:
                 c1,c2 = st.columns(2)
-                with c1: e_wavy_h = st.number_input("파형 높이 [mm]",0.5,5.0,1.5,0.1,key='e_wavy_h')
-                with c2: e_wavy_a = st.number_input("파형 각도 [°]",5.0,30.0,17.5,0.5,key='e_wavy_a')
+                with c1: e_wavy_h = st.number_input("파형 높이 [mm]",0.0,5.0,1.5,0.1,key='e_wavy_h')
+                with c2: e_wavy_a = st.number_input("파형 각도 [°]",0.0,30.0,17.5,0.5,key='e_wavy_a')
             if evap_fin in ['louvered','louver']:
                 c1,c2 = st.columns(2)
-                with c1: e_lv_p = st.number_input("루버 피치 [mm]",0.8,4.0,1.7,0.1,key='e_lv_p')
-                with c2: e_lv_a = st.number_input("루버 각도 [°]",15.0,40.0,28.0,1.0,key='e_lv_a')
+                with c1: e_lv_p = st.number_input("루버 피치 [mm]",0.0,4.0,1.7,0.1,key='e_lv_p')
+                with c2: e_lv_a = st.number_input("루버 각도 [°]",0.0,40.0,28.0,1.0,key='e_lv_a')
             if evap_fin == 'slit':
                 c1,c2 = st.columns(2)
                 with c1: e_slit_n = st.number_input("슬릿 수",2,12,6,key='e_slit_n')
-                with c2: e_slit_h = st.number_input("슬릿 높이 [mm]",0.3,3.0,1.0,0.1,key='e_slit_h')
+                with c2: e_slit_h = st.number_input("슬릿 높이 [mm]",0.0,3.0,1.0,0.1,key='e_slit_h')
             # 재질
             c1,c2 = st.columns(2)
             with c1: e_fin_mat = st.selectbox("핀 재질",["Al","Cu"],key='e_fin_mat')
@@ -183,19 +183,19 @@ with st.sidebar:
             # MCHX
             c1,c2 = st.columns(2)
             with c1:
-                e_ch_w = st.number_input("Ch Width [mm]",0.3,3.0,0.8,0.1,key='e_ch_w')
-                e_ch_h = st.number_input("Ch Height [mm]",0.3,5.0,1.5,0.1,key='e_ch_h')
-                e_ch_wall = st.number_input("Ch Wall [mm]",0.1,1.0,0.4,0.1,key='e_ch_wall')
-                e_lp = st.number_input("Louver Pitch [mm]",0.5,3.0,1.2,0.1,key='e_lp')
+                e_ch_w = st.number_input("Ch Width [mm]",0.0,3.0,0.8,0.1,key='e_ch_w')
+                e_ch_h = st.number_input("Ch Height [mm]",0.0,5.0,1.5,0.1,key='e_ch_h')
+                e_ch_wall = st.number_input("Ch Wall [mm]",0.0,1.0,0.4,0.1,key='e_ch_wall')
+                e_lp = st.number_input("Louver Pitch [mm]",0.0,3.0,1.2,0.1,key='e_lp')
             with c2:
-                e_la = st.number_input("Louver Angle [°]",10.0,40.0,27.0,1.0,key='e_la')
+                e_la = st.number_input("Louver Angle [°]",0.0,40.0,27.0,1.0,key='e_la')
                 e_nports = st.number_input("N_ports",4,40,12,key='e_nports')
                 e_nslabs = st.number_input("N_slabs",1,6,1,key='e_nslabs')
-                e_slab_p = st.number_input("Slab Pitch [mm]",4.0,15.0,8.0,0.5,key='e_slab_p')
+                e_slab_p = st.number_input("Slab Pitch [mm]",0.0,15.0,8.0,0.5,key='e_slab_p')
             c1,c2 = st.columns(2)
             with c1:
-                evap_fpi = st.slider("FPI",6,35,20,key='efpi_mchx')
-                e_mchx_ft = st.number_input("핀 두께 [mm] ",0.03,0.20,0.06,0.01,key='e_mchx_ft')
+                evap_fpi = st.slider("FPI",0,35,20,key='efpi_mchx')
+                e_mchx_ft = st.number_input("핀 두께 [mm] ",0.0,0.20,0.06,0.01,key='e_mchx_ft')
             with c2:
                 e_fin_mat = st.selectbox("핀 재질 ",["Al","Cu"],key='e_mchx_fmat')
                 e_tube_mat = st.selectbox("튜브 재질 ",["Al","Cu"],key='e_mchx_tmat')
@@ -203,9 +203,9 @@ with st.sidebar:
     with st.expander("응축기", expanded=False):
         cond_hx_type = st.radio("HX 타입 ",["FT","MCHX"],horizontal=True,key='cond_hx_type')
         c1,c2,c3 = st.columns(3)
-        with c1: cond_W = st.number_input("W[mm] ",50,1000,350,key="cW")
-        with c2: cond_H = st.number_input("H[mm] ",50,800,280,key="cH")
-        with c3: cond_D = st.number_input("D[mm] ",10,200,50,key="cD")
+        with c1: cond_W = st.number_input("W[mm] ",0,1000,350,key="cW")
+        with c2: cond_H = st.number_input("H[mm] ",0,800,280,key="cH")
+        with c3: cond_D = st.number_input("D[mm] ",0,200,50,key="cD")
 
         if cond_hx_type == "FT":
             c1,c2 = st.columns(2)
@@ -217,69 +217,69 @@ with st.sidebar:
                 cond_Nt = st.number_input("Col ",2,30,9,key="cNt")
             c1,c2 = st.columns(2)
             with c1:
-                cond_fpi = st.slider("FPI ",6,30,14,key="cfpi")
-                c_fin_t = st.number_input("핀 두께[mm]",0.05,0.30,0.10,0.01,key='c_fin_t')
-                c_Do = st.number_input("튜브 Do[mm]",5.0,15.0,9.52,0.01,key='c_Do')
+                cond_fpi = st.slider("FPI ",0,30,14,key="cfpi")
+                c_fin_t = st.number_input("핀 두께[mm]",0.0,0.30,0.10,0.01,key='c_fin_t')
+                c_Do = st.number_input("튜브 Do[mm]",0.0,15.0,9.52,0.01,key='c_Do')
             with c2:
-                c_Di = st.number_input("튜브 Di[mm]",4.0,14.0,8.52,0.01,key='c_Di')
-                c_drain = st.number_input("드레인[mm]",5.0,50.0,25.0,1.0,key='c_drain')
+                c_Di = st.number_input("튜브 Di[mm]",0.0,14.0,8.52,0.01,key='c_Di')
+                c_drain = st.number_input("드레인[mm]",0.0,50.0,25.0,1.0,key='c_drain')
             c1,c2 = st.columns(2)
-            with c1: c_Pt = st.number_input("Pitch_t[mm]",15.0,40.0,25.4,0.1,key='c_Pt')
-            with c2: c_Pl = st.number_input("Pitch_l[mm]",15.0,40.0,22.0,0.1,key='c_Pl')
+            with c1: c_Pt = st.number_input("Pitch_t[mm]",0.0,40.0,25.4,0.1,key='c_Pt')
+            with c2: c_Pl = st.number_input("Pitch_l[mm]",0.0,40.0,22.0,0.1,key='c_Pl')
             if cond_fin in ['wavy']:
                 c1,c2 = st.columns(2)
-                with c1: c_wavy_h = st.number_input("파형높이[mm]",0.5,5.0,1.5,0.1,key='c_wavy_h')
-                with c2: c_wavy_a = st.number_input("파형각도[°]",5.0,30.0,17.5,0.5,key='c_wavy_a')
+                with c1: c_wavy_h = st.number_input("파형높이[mm]",0.0,5.0,1.5,0.1,key='c_wavy_h')
+                with c2: c_wavy_a = st.number_input("파형각도[°]",0.0,30.0,17.5,0.5,key='c_wavy_a')
             if cond_fin in ['louvered','louver']:
                 c1,c2 = st.columns(2)
-                with c1: c_lv_p = st.number_input("루버피치[mm]",0.8,4.0,1.7,0.1,key='c_lv_p')
-                with c2: c_lv_a = st.number_input("루버각도[°]",15.0,40.0,28.0,1.0,key='c_lv_a')
+                with c1: c_lv_p = st.number_input("루버피치[mm]",0.0,4.0,1.7,0.1,key='c_lv_p')
+                with c2: c_lv_a = st.number_input("루버각도[°]",0.0,40.0,28.0,1.0,key='c_lv_a')
             if cond_fin == 'slit':
                 c1,c2 = st.columns(2)
                 with c1: c_slit_n = st.number_input("슬릿수 ",2,12,6,key='c_slit_n')
-                with c2: c_slit_h = st.number_input("슬릿높이[mm]",0.3,3.0,1.0,0.1,key='c_slit_h')
+                with c2: c_slit_h = st.number_input("슬릿높이[mm]",0.0,3.0,1.0,0.1,key='c_slit_h')
             c1,c2 = st.columns(2)
             with c1: c_fin_mat = st.selectbox("핀재질",["Al","Cu"],key='c_fin_mat')
             with c2: c_tube_mat = st.selectbox("튜브재질",["Cu","Al"],key='c_tube_mat')
         else:
             c1,c2 = st.columns(2)
             with c1:
-                c_ch_w = st.number_input("Ch Width[mm] ",0.3,3.0,0.8,0.1,key='c_ch_w')
-                c_ch_h = st.number_input("Ch Height[mm] ",0.3,5.0,1.5,0.1,key='c_ch_h')
-                c_ch_wall = st.number_input("Ch Wall[mm] ",0.1,1.0,0.4,0.1,key='c_ch_wall')
-                c_lp = st.number_input("Louver Pitch[mm] ",0.5,3.0,1.2,0.1,key='c_lp')
+                c_ch_w = st.number_input("Ch Width[mm] ",0.0,3.0,0.8,0.1,key='c_ch_w')
+                c_ch_h = st.number_input("Ch Height[mm] ",0.0,5.0,1.5,0.1,key='c_ch_h')
+                c_ch_wall = st.number_input("Ch Wall[mm] ",0.0,1.0,0.4,0.1,key='c_ch_wall')
+                c_lp = st.number_input("Louver Pitch[mm] ",0.0,3.0,1.2,0.1,key='c_lp')
             with c2:
-                c_la = st.number_input("Louver Angle[°] ",10.0,40.0,27.0,1.0,key='c_la')
+                c_la = st.number_input("Louver Angle[°] ",0.0,40.0,27.0,1.0,key='c_la')
                 c_nports = st.number_input("N_ports ",4,40,12,key='c_nports')
                 c_nslabs = st.number_input("N_slabs ",1,6,1,key='c_nslabs')
-                c_slab_p = st.number_input("Slab Pitch[mm] ",4.0,15.0,8.0,0.5,key='c_slab_p')
+                c_slab_p = st.number_input("Slab Pitch[mm] ",0.0,15.0,8.0,0.5,key='c_slab_p')
             c1,c2 = st.columns(2)
             with c1:
-                cond_fpi = st.slider("FPI  ",6,35,20,key='cfpi_mchx')
-                c_mchx_ft = st.number_input("핀두께[mm] ",0.03,0.20,0.06,0.01,key='c_mchx_ft')
+                cond_fpi = st.slider("FPI  ",0,35,20,key='cfpi_mchx')
+                c_mchx_ft = st.number_input("핀두께[mm] ",0.0,0.20,0.06,0.01,key='c_mchx_ft')
             with c2:
                 c_fin_mat = st.selectbox("핀재질 ",["Al","Cu"],key='c_mchx_fmat')
                 c_tube_mat = st.selectbox("튜브재질 ",["Al","Cu"],key='c_mchx_tmat')
 
     with st.expander("운전 조건", expanded=True):
-        T_amb = st.number_input("T_amb [°C]",15.0,45.0,27.0,0.5,key='T_amb')
-        RH_in = st.slider("RH",0.10,0.95,0.70,0.05,key='RH_in')
-        CMM = st.number_input("CMM",1.0,30.0,6.75,0.5,key='CMM')
+        T_amb = st.number_input("T_amb [°C]",0.0,45.0,27.0,0.5,key='T_amb')
+        RH_in = st.slider("RH",0.0,0.95,0.70,0.05,key='RH_in')
+        CMM = st.number_input("CMM",0.0,30.0,6.75,0.5,key='CMM')
         gap_mode = st.selectbox("Gap Mode",["open","semi","sealed"],index=1,key='gap_mode')
         seal_frac = st.slider("Seal Fraction",0.0,1.0,0.7,0.1,disabled=(gap_mode!="semi"),key='seal_frac')
         c1,c2 = st.columns(2)
         with c1: frame_mat = st.selectbox("프레임 재질",["Al","Steel"],key='frame_mat')
-        with c2: A_frame = st.number_input("프레임 단면적 [cm²]",1.0,20.0,4.0,0.5,key='A_frame')
+        with c2: A_frame = st.number_input("프레임 단면적 [cm²]",0.0,20.0,4.0,0.5,key='A_frame')
 
     with st.expander("냉매", expanded=False):
         refrigerant = st.selectbox("냉매",["R410A","R32","R134a","R290","R1234yf"],key='refr')
         T_evap = st.number_input("T_evap [°C]",-10.0,20.0,5.0,0.5,key='T_evap')
-        T_cond = st.number_input("T_cond [°C]",30.0,65.0,45.0,0.5,key='T_cond')
+        T_cond = st.number_input("T_cond [°C]",0.0,65.0,45.0,0.5,key='T_cond')
 
     with st.expander("시뮬레이션 범위", expanded=False):
-        gap_min = st.number_input("Gap Min [mm]",1,50,5,key='gap_min')
-        gap_max = st.number_input("Gap Max [mm]",30,200,100,key='gap_max')
-        gap_pts = st.slider("포인트 수",10,50,25,key='gap_pts')
+        gap_min = st.number_input("Gap Min [mm]",0,50,5,key='gap_min')
+        gap_max = st.number_input("Gap Max [mm]",0,200,100,key='gap_max')
+        gap_pts = st.slider("포인트 수",0,50,25,key='gap_pts')
 
     st.divider()
     run_btn = st.button("▶ 해석 실행", type="primary", use_container_width=True)
