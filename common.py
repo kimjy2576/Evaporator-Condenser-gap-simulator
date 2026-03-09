@@ -1668,7 +1668,7 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
         h_i = 1000.0; phase = 'two_phase'
         T_o_conv = T_air; W_o_conv = W_air; is_wet_conv = False
 
-        for _iter in range(20):
+        for _iter in range(12):
             # h_i 업데이트 (현재 Q 기반 Bo)
             h_i, phase = refrigerant_htc_auto(spec, geo, ref, side, x_ref, m_ref,
                                               max(Q_prev, 0.1), evap_corr=evap_corr)
@@ -1728,7 +1728,7 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
             T_o_conv = T_o; W_o_conv = W_o; is_wet_conv = wet
             Q_prev = Q_a
 
-            if converged or _iter == 19:
+            if converged or _iter == 11:
                 break
 
         Q = Q_prev
@@ -1779,7 +1779,7 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
     T_air_rows = [T_air_in] * Nr
     W_air_rows = [get_W(T_air_in, RH_in)] * Nr
     RH_air_rows = [RH_in] * Nr
-    N_iter = 5  # 공기↔냉매 수렴 반복 (counter/parallel 모두)
+    N_iter = 3  # 공기↔냉매 수렴 반복 (3회면 충분)
     final = None
 
     for iteration in range(N_iter):

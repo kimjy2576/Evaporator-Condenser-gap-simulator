@@ -349,23 +349,21 @@ def conduction_shortcircuit(gap_mm: float, p: GapParams,
 
 
 def simulate_gap(gap_mm, evap_spec, cond_spec, evap_geo, cond_geo,
-                 ua_evap, ua_cond, ref: RefrigerantState, gp: GapParams) -> dict:
+                 ua_evap, ua_cond, ref: RefrigerantState, gp: GapParams,
+                 m_ref=0.00458, x_in=0.22, evap_corr='auto',
+                 flow='counter', N_seg=5, _coil_ref_cache=None) -> dict:
     """
-    단일 간격에서 전체 열유동 계산 (모듈 A)
+    단일 간격에서 전체 열유동 계산 (모듈 A) — Level 2 통합
 
-    [열 손실 구성]
-    ① 외부 재순환 (open/semi): ΔT_recir → 증발기 입구 온도 상승
-    ② 내부 혼합 (sealed/semi): Q_mix_penalty → Gap 내 냉기 가열 손실
-    ③ 복사 열침입: Q_rad (형상인수 × Stefan-Boltzmann)
-    ④ 전도 단락: Q_cond (프레임 열전도)
-
-    Q_net = Q_evap - Q_rad - Q_cond_loss - Q_mix_penalty
+    Level 2 Tube-Segment 모델 사용:
+    - 세그먼트별 건도 추적 + T_wall 반복 수렴
+    - 상관식 자동 선택 (evap_corr='auto')
     """
+    from common import compute_coil_v3
+
     T_evap_surf = ref.T_sat_evap
     T_cond_surf = ref.T_sat_cond
     W_eff = max(evap_spec.W, cond_spec.W)
-
-    # CMM → V_face 환산
     A_face = evap_spec.W * evap_spec.H
     gp.set_V_face(A_face)
 
@@ -378,56 +376,48 @@ def simulate_gap(gap_mm, evap_spec, cond_spec, evap_geo, cond_geo,
     Q_mix     = gap_result['Q_mix_penalty']
     T_in_eff  = gap_result['T_in_eff']
 
-    # ── 공통 열전달 엔진 호출 (Tube-Row Segmented Threlkeld) ──
-    from common import compute_coil_performance_segmented
-
     RH_in = getattr(gp, 'RH_in', 0.50)
-    rho_air = 1.18; cp_air = 1006.0
+    P_atm = 101325.0
+    rho_air = P_atm / (287.05 * (T_in_eff + 273.15))
+    cp_air = 1006.0
     m_dot_air = rho_air * gp.V_face * A_face
 
-    # 실제 조건 (Gap 영향 반영된 입구 온도)
-    coil = compute_coil_performance_segmented(evap_spec, evap_geo, ua_evap,
-                                              T_in_eff, RH_in, T_evap_surf, gp.V_face)
-    # 기준 조건 (Gap→∞, 손실 없음)
-    coil_ref = compute_coil_performance_segmented(evap_spec, evap_geo, ua_evap,
-                                                   gp.T_amb, RH_in, T_evap_surf, gp.V_face)
+    # ── Level 2 코일 모델 ──
+    coil = compute_coil_v3(evap_spec, evap_geo, ref,
+                           T_in_eff, RH_in, gp.V_face,
+                           m_ref, x_in, 'evap', N_seg, flow, evap_corr)
+    if _coil_ref_cache is not None:
+        coil_ref = _coil_ref_cache
+    else:
+        coil_ref = compute_coil_v3(evap_spec, evap_geo, ref,
+                                   gp.T_amb, RH_in, gp.V_face,
+                                   m_ref, x_in, 'evap', N_seg, flow, evap_corr)
 
-    eps       = coil['eps']
-    NTU       = coil['NTU']
-    Q_evap    = max(eps * m_dot_air * cp_air * (T_in_eff - T_evap_surf), 0.0)
-    T_evap_out = coil['T_out']
-    W_in      = coil['W_in']
-    W_out     = coil['W_out']
-    T_dp      = coil['T_dp']
-    h_in      = coil['h_in']
-    h_out     = coil['h_out']
-    h_amb     = coil_ref['h_in']   # = h(T_amb, RH_in)
-    h_out_ref = coil_ref['h_out']
-
-    # ── Q 분해 (공통 엔진 결과 사용) ──
     Q_total    = coil['Q_total']
     Q_sensible = coil['Q_sen']
     Q_latent   = coil['Q_lat']
     SHR        = coil['SHR']
+    T_evap_out = coil['T_out']
+    W_in       = coil['W_in']
+    W_out      = coil.get('W_out', W_in)
+    T_dp       = coil['T_dp']
+    h_in       = coil['h_in']
+    h_out      = coil.get('h_out', h_in - Q_total / (m_dot_air + 1e-9))
+    h_amb      = coil_ref['h_in']
+    Q_evap     = Q_total
 
-    # Q_useful: 엔탈피 기반 유효 능력 (잠열 포함)
+    eps = coil.get('eps', Q_total / (m_dot_air * cp_air * max(abs(T_in_eff - T_evap_surf), 0.1) + 1e-9))
+    NTU = -np.log(1 - min(eps, 0.999)) if eps < 0.999 else 7.0
+
     Q_useful = max(m_dot_air * (h_amb - h_out), 0.0)
     Q_recir_waste = max(Q_total - Q_useful, 0.0)
-
-    # Q_ref: 기준 능력 (Gap→∞)
     Q_ref = max(coil_ref['Q_total'], 1.0)
+    dehumid_rate = coil.get('dehumid_rate', 0)
 
-    # 제습량 [g/h]
-    dehumid_rate = coil['dehumid_rate']
-
-    # 복사 & 전도 열침입
     q_rad  = radiation_flux(gap_mm, T_cond_surf, T_evap_surf, W_eff)
     Q_rad  = q_rad * evap_spec.W * evap_spec.H
     Q_cond_loss = conduction_shortcircuit(gap_mm, gp, T_cond_surf, T_evap_surf)
 
-    # 순 냉방능력 = 실제 냉방 기여 - 복사 - 전도 - 혼합 손실
-    # Q_mix: Gap 내부 혼합으로 증발기 냉각 효과 η_mix 분율 상쇄
-    # 물리: 혼합은 기존 냉각 에너지를 "되돌리는" 것이므로 Q_useful에 비례
     Q_mix = eta_mix * Q_useful
     Q_net = max(Q_useful - Q_rad - Q_cond_loss - Q_mix, 0.0)
     cap_ratio = min(100.0, Q_net / Q_ref * 100.0)
@@ -446,13 +436,27 @@ def simulate_gap(gap_mm, evap_spec, cond_spec, evap_geo, cond_geo,
                 V_face=gp.V_face, CMM=gp.CMM,
                 eta_mix=eta_mix, gap_mode=gp.gap_mode,
                 mix_detail=gap_result.get('mix_detail'),
-                wet_rows=coil.get('wet_rows', int(coil['is_wet'])),
-                Nr=coil.get('Nr', 1),
-                q_cond=coil['q_cond'])
+                wet_rows=0, Nr=coil.get('Nr', 1),
+                q_cond=coil.get('q_cond', 0),
+                phase_summary=coil.get('phase_summary', {}),
+                x_out=coil.get('x_out', 0),
+                T_ref_out=coil.get('T_ref_out', 0))
 
 
 def sweep(gaps, evap_spec, cond_spec, evap_geo, cond_geo,
-          ua_evap, ua_cond, ref, gp) -> list:
+          ua_evap, ua_cond, ref, gp,
+          m_ref=0.00458, x_in=0.22, evap_corr='auto',
+          flow='counter', N_seg=5) -> list:
+    # ★ 기준 조건 (Gap→∞) 1회만 계산 → 캐싱
+    from common import compute_coil_v3
+    RH_in = getattr(gp, 'RH_in', 0.50)
+    A_face = evap_spec.W * evap_spec.H
+    V_face = gp.CMM / (60.0 * A_face)
+    coil_ref = compute_coil_v3(evap_spec, evap_geo, ref,
+                               gp.T_amb, RH_in, V_face,
+                               m_ref, x_in, 'evap', N_seg, flow, evap_corr)
     return [simulate_gap(g, evap_spec, cond_spec, evap_geo, cond_geo,
-                         ua_evap, ua_cond, ref, gp) for g in gaps]
+                         ua_evap, ua_cond, ref, gp,
+                         m_ref, x_in, evap_corr, flow, N_seg,
+                         _coil_ref_cache=coil_ref) for g in gaps]
 

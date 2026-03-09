@@ -394,7 +394,9 @@ def analyze_combined(case: dict, gaps: np.ndarray,
                      evap_spec, geo_evap: dict,
                      cond_spec, geo_cond: dict,
                      ua_evap: dict, ua_cond: dict,
-                     ref: RefrigerantState) -> dict:
+                     ref: RefrigerantState,
+                     m_ref=0.00458, x_in=0.22, evap_corr='auto',
+                     flow='counter', N_seg=5) -> dict:
     """
     단일 케이스에 대해 Gap sweep → 모듈 A(냉방성능) + 모듈 B(비말동반) 동시 계산
 
@@ -425,13 +427,13 @@ def analyze_combined(case: dict, gaps: np.ndarray,
         V_on    = v_onset_mchx(co_spec)
         _eta_fn = eta_co_mchx
     else:
-        # FT: 공통 Tube-Row Segmented Threlkeld 엔진 사용
-        from common import compute_coil_performance_segmented
-        coil = compute_coil_performance_segmented(evap_spec, geo_evap, ua_evap,
-                                                   case['T_in'], case['RH_in'],
-                                                   case['T_wall'], V_face)
+        # FT: Level 2 Tube-Segment 모델 사용
+        from common import compute_coil_v3
+        coil = compute_coil_v3(evap_spec, geo_evap, ref,
+                               case['T_in'], case['RH_in'], V_face,
+                               m_ref, x_in, 'evap', N_seg, flow, evap_corr)
         # cr dict 호환 형식으로 매핑
-        cr = dict(q_cond=coil['q_cond'], Q_total=coil['Q_total'],
+        cr = dict(q_cond=coil.get('q_cond', 0), Q_total=coil['Q_total'],
                   Q_lat=coil['Q_lat'], Q_sen=coil['Q_sen'],
                   SHR=coil['SHR'], T_dp=coil['T_dp'],
                   T_wall=case['T_wall'],
@@ -448,7 +450,8 @@ def analyze_combined(case: dict, gaps: np.ndarray,
     for g in gaps:
         # 모듈 A: Cap Retention
         r_gap = simulate_gap(g, evap_spec, cond_spec, geo_evap, geo_cond,
-                              ua_evap, ua_cond, ref, gp)
+                              ua_evap, ua_cond, ref, gp,
+                              m_ref, x_in, evap_corr, flow, N_seg)
         cap_arr.append(r_gap['cap_ratio'])
 
         # 모듈 B: Carryover Flux (Mid η)
