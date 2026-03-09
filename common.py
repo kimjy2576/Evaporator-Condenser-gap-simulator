@@ -410,84 +410,54 @@ def _j_plain_staggered(Re, spec, geo=None):
 
 
 def _j_wavy_staggered(Re, spec, geo=None):
-    """
-    Wavy fin — Yan & Sheen (2000) 직접 비교 기반 보정
+    """Wavy (herringbone) fin — Wang et al. (1999) IJHMT 42:1945, Table 2
+    Direct 상관식. Pd = wavy_height (amplitude)."""
+    Dc = geo['Dc'] if geo and 'Dc' in geo else spec.tube_do + 2*spec.fin_thickness
+    Fp = spec.fin_pitch; Pt = spec.tube_pitch_t; Pl = spec.tube_pitch_l
+    Nr = spec.tube_rows
+    Pd = getattr(spec, 'wavy_height', 1.5e-3)  # amplitude
+    Re = np.clip(Re, 300, 10000)
 
-    [보정 근거]
-    Yan & Sheen (2000) IJHMT 43:1651 — 36개 코일(plain/wavy/louver) 직접 비교
-      → j_wavy/j_plain = 1.25 @ Re~1500  (12개 wavy 코일 평균)
-    Wang (2002) IJR 25:673 — 61개 wavy 코일, 편차 6.98%
-
-    [Re 의존성]
-    Re<1500: E_w ≈ 1.25 (상수) — Yan (2000) Re=300~2000에서 비율 안정
-    Re>1500: Görtler 와류 약화에 의한 감쇠 — 물리적 메커니즘 기반
-      → 원심력 불안정(Görtler) 와류는 Re 증가 시 난류에 흡수됨
-    ※ 고 Re 감쇠 강도(0.25/10000)는 추정치, Re>5000 실험 데이터 부재
-
-    [적용 범위]
-    검증: 300 ≤ Re_Dc ≤ 3000 (Yan & Sheen 데이터 범위)
-    외삽: 3000 < Re_Dc ≤ 18000 (감쇠 모델 기반, 미검증)
-    기하: Xf=1.18~1.58mm, Fp=1.2~2.6mm, α=15~25°, Nr=1~4
-    """
-    j_plain = _j_plain_staggered(Re, spec, geo)
-    Xf = spec.wavy_height; Fp = spec.fin_pitch; alpha = spec.wavy_angle
-    Re_c = np.clip(Re, 300, 18000)
-    E_base = 1.05 + 0.222 * (Xf / Fp)**0.40 * (alpha / 20.0)**0.25
-    decay = 0.25 * max(0, (Re_c - 1500) / 10000)
-    E_w = E_base * (1.0 - decay)
-    return max(0.003, j_plain * np.clip(E_w, 1.05, 1.35))
+    if Nr == 1:
+        ln_Re = np.log(Re)
+        j1 = -0.383 - 0.159*np.log(max(Nr,1)*(Fp/Dc)**0.14)
+        j = 1.201 / (ln_Re**2.921) * (Fp/Dc)**j1 * (Pd/Pl)**(-0.27)
+    else:
+        j1 = -0.329 - 0.147*np.log(Nr*(Fp/Dc)**0.44*(Pd/Dc)**0.09*(Pt/Pl)**(-0.04))
+        j = 0.394 * Re**j1 * (Fp/Dc)**(-0.031) * (Pd/Dc)**0.346 * Nr**(-0.107)
+    return max(0.003, j)
 
 
 def _j_louvered_staggered(Re, spec, geo=None):
-    """
-    Louvered fin — Yan & Sheen (2000), Wang (1999) IJHMT 42(1):1
+    """Louvered fin — Wang, Lee & Chang (1999) IJHMT 42(1):1, Table 1
+    Direct 상관식. Re 입력 = Re_Dc → 내부에서 Re_Lp로 변환.
+    θ는 radian 사용 (원논문 검증: degree 사용 시 j 폭발)."""
+    Dc = geo['Dc'] if geo and 'Dc' in geo else spec.tube_do + 2*spec.fin_thickness
+    Lp = getattr(spec, 'ft_louver_pitch', 1.7e-3)
+    Fp = spec.fin_pitch; Pt = spec.tube_pitch_t; Pl = spec.tube_pitch_l
+    Nr = spec.tube_rows
+    theta_r = getattr(spec, 'ft_louver_angle', 28.0) * np.pi / 180
+    Fl = Pl  # fin length ≈ tube_pitch_l
+    Td = getattr(spec, 'D', 0.045)
+    Re_Lp = np.clip(Re * Lp / Dc, 100, 5000)
 
-    [보정 근거]
-    Yan & Sheen (2000) — j_louver/j_plain = 1.40 @ Re~1500 (직접 비교)
-    Wang (1999) — 49개 louver 코일, 편차 8.1%
-
-    [Re 의존성]
-    Re<1500: 저 Re boost +8% — 층류 경계층 재시작 효과 극대
-    Re>1500: E_l ≈ 1.40 (상수) — j_louver와 j_plain의 Re 지수가 유사
-    ※ Kim & Cho (2015): "At high Re, j/f ratios of slit ≈ plain"
-       → E_j가 고 Re에서 급감하지 않음을 시사 (감쇠 미적용 근거)
-
-    [적용 범위]
-    검증: 300 ≤ Re_Dc ≤ 3000 (Yan & Sheen, Wang 1999 범위)
-    외삽: 3000 < Re_Dc ≤ 15000 (상수 E 가정, 미검증)
-    기하: Lp=1.2~2.5mm, Fp=1.2~2.0mm, θ=20~35°, Nr=1~4
-    """
-    j_plain = _j_plain_staggered(Re, spec, geo)
-    Lp = spec.ft_louver_pitch; Fp = spec.fin_pitch; theta = spec.ft_louver_angle
-    Re_c = np.clip(Re, 300, 15000)
-    E_base = 1.10 + 0.311 * (Lp / Fp)**0.25 * (theta / 30.0)**0.30
-    E_l = E_base * (1.0 + 0.08 * max(0, (1500 - Re_c) / 1500))
-    return max(0.004, j_plain * np.clip(E_l, 1.20, 1.55))
+    if Nr == 1:
+        j1 = -0.49 + 0.021*theta_r
+        j = 0.455 * Re_Lp**j1 * (Fp/Pl)**(-0.46) * (Lp/Fl)**1.14 * max(Nr,1)**(-0.34)
+    else:
+        j2 = -0.545 + 0.0538*theta_r - 0.0244*Nr
+        j = 0.394 * Re_Lp**j2 * (Fp/Pl)**(-0.39) * (Td/Pt)**0.46 * (Lp/Fl)**0.33
+    return max(0.003, j)
 
 
 def _j_slit_staggered(Re, spec, geo=None):
-    """
-    Slit fin (랜스형) — Wang (2001) IJHMT 44:3565, Du & Wang (2000)
-
-    [보정 근거]
-    Wang (2001) — 56개 slit 코일, 편차 j:7.26%, f:7.18%
-    Du & Wang (2000) — superslit 코일 실험
-
-    [Re 의존성]
-    전 Re에서 E_s ≈ 1.33 (상수)
-    ※ 이것은 모델의 한계가 아닌 물리적 관찰:
-       Wang (2001): "airside performance for compact slit fin geometry is
-       relatively independent of the number of tube row and fin pitch"
-       → slit의 경계층 부분 교란은 Re에 약한 의존성을 보임
-    ※ 단, Re>5000에서는 감쇠 가능성 있으나 실험 데이터 부재
-
-    [적용 범위]
-    검증: 800 ≤ Re_Dc ≤ 2500 (Wang 2001, Du 2000 데이터)
-    외삽: 300~800, 2500~12000 (상수 E 가정, 미검증)
-    기하: Ns=4~10, Sh=0.8~1.5mm, Fp=1.2~2.0mm, Nr=1~6
-    """
+    """Slit fin — Plain × E_slit (문헌 비율 기반)
+    Wang (2001) direct f 상관식 불안정 → etype 비율 사용.
+    Yan & Sheen (2000): j_slit/j_plain ≈ 1.3~1.4"""
     j_plain = _j_plain_staggered(Re, spec, geo)
-    Ns = spec.slit_num; Sh = spec.slit_height; Fp = spec.fin_pitch
+    Ns = getattr(spec, 'slit_num', 6)
+    Sh = getattr(spec, 'slit_height', 1e-3)
+    Fp = spec.fin_pitch
     E_s = 1.15 + 0.12 * min(Ns, 10)**0.30 * (Sh / Fp)**0.20
     return max(0.003, j_plain * np.clip(E_s, 1.20, 1.50))
 
