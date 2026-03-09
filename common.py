@@ -591,32 +591,22 @@ def gnielinski_htc(Re, Pr, k, D):
 
 
 def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None):
-    """건도(x) 기반 냉매 HTC 자동 분기 — Level 1 핵심
+    """건도(x) 기반 냉매 HTC 자동 분기
 
     x < 0:    과냉 액체 → Gnielinski(liquid)
-    0 ≤ x ≤ 1: 이상 영역 → Shah(1982/1979)
+    0 ≤ x ≤ 1: 이상 영역 → Shah(1982) evap / Shah(1979) cond
     x > 1:    과열 증기 → Gnielinski(vapor)
-    0.90~1.05: 블렌딩 전이
+    전이구간: 블렌딩
 
-    Parameters
-    ----------
-    spec : FinTubeSpec or MCHXSpec
-    geo  : geometry dict
-    ref  : RefrigerantState
-    side : 'evap' or 'cond'
-    x    : 건도 (0~1 이상, >1 과열, <0 과냉)
-    m_ref: 냉매 질량유량 [kg/s]
-    Q_seg: 세그먼트 열량 (Shah 보정용, optional)
-
-    Returns
-    -------
-    h_i : float [W/m²K]
-    phase : str ('subcooled', 'two_phase', 'superheated', 'transition')
+    Shah(1982) — 정석 구현:
+      h_tp = ψ × h_lo
+      h_lo = Dittus-Boelter with Re_lo = G×D/μ_l (total mass flux)
+      ψ = f(Co, Bo, Fr_l) — 3-regime chart correlation
     """
     rf = ref.refrigerant
     if hasattr(spec, 'tube_di'):
         D = spec.tube_di
-        A_cs_one = np.pi * D**2 / 4   # 단일 튜브 단면적 (직렬 회로)
+        A_cs_one = np.pi * D**2 / 4
     else:
         D = geo.get('Dh', 2e-3)
         A_cs_one = spec.ch_width * spec.ch_height * getattr(spec, 'n_ports', 10)
@@ -625,72 +615,103 @@ def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None):
 
     if side == 'evap':
         T_sat_K = ref.T_sat_evap + 273.15
-        P_sat = ref.P_evap
-        h_fg = ref.h_fg_evap
+        P_sat = ref.P_evap; h_fg = ref.h_fg_evap
     else:
         T_sat_K = ref.T_sat_cond + 273.15
-        P_sat = ref.P_cond
-        h_fg = ref.h_cond_v - ref.h_cond_l
+        P_sat = ref.P_cond; h_fg = ref.h_cond_v - ref.h_cond_l
 
-    # ── 과냉 (x < 0) ──
+    # ── 과냉 (x < -0.05) ──
     if x < -0.05:
-        mu_l = CP.PropsSI('V', 'T', T_sat_K, 'Q', 0, rf)
-        k_l  = CP.PropsSI('L', 'T', T_sat_K, 'Q', 0, rf)
-        Pr_l = CP.PropsSI('Prandtl', 'T', T_sat_K, 'Q', 0, rf)
-        Re_l = G_ref * D / mu_l
-        return gnielinski_htc(Re_l, Pr_l, k_l, D), 'subcooled'
+        mu_l = CP.PropsSI('V','T',T_sat_K,'Q',0,rf)
+        k_l  = CP.PropsSI('L','T',T_sat_K,'Q',0,rf)
+        Pr_l = CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
+        return gnielinski_htc(G_ref*D/mu_l, Pr_l, k_l, D), 'subcooled'
 
     # ── 과열 (x > 1.05) ──
     if x > 1.05:
-        mu_v = CP.PropsSI('V', 'T', T_sat_K, 'Q', 1, rf)
-        k_v  = CP.PropsSI('L', 'T', T_sat_K, 'Q', 1, rf)
-        Pr_v = CP.PropsSI('Prandtl', 'T', T_sat_K, 'Q', 1, rf)
-        Re_v = G_ref * D / mu_v
-        return gnielinski_htc(Re_v, Pr_v, k_v, D), 'superheated'
+        mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
+        k_v  = CP.PropsSI('L','T',T_sat_K,'Q',1,rf)
+        Pr_v = CP.PropsSI('Prandtl','T',T_sat_K,'Q',1,rf)
+        return gnielinski_htc(G_ref*D/mu_v, Pr_v, k_v, D), 'superheated'
 
     # ── 이상 영역 (0 ≤ x ≤ 1) ──
     x_clip = np.clip(x, 0.05, 0.95)
 
+    # 공통 물성
+    mu_l = ref.mu_l_evap if side == 'evap' else CP.PropsSI('V','T',T_sat_K,'Q',0,rf)
+    k_l  = ref.k_l_evap  if side == 'evap' else CP.PropsSI('L','T',T_sat_K,'Q',0,rf)
+    Pr_l = ref.Pr_l_evap if side == 'evap' else CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
+    rho_l = ref.rho_l_evap if side == 'evap' else CP.PropsSI('D','T',T_sat_K,'Q',0,rf)
+    rho_v = ref.rho_v_evap if side == 'evap' else CP.PropsSI('D','T',T_sat_K,'Q',1,rf)
+
+    # h_lo: 전체 유량이 액체일 때 (Shah 기준)
+    Re_lo = G_ref * D / mu_l
+    h_lo = 0.023 * max(Re_lo, 2300)**0.8 * Pr_l**0.4 * k_l / D
+
     if side == 'evap':
-        # Shah (1982)
-        Re_l = max(G_ref * (1 - x_clip) * D / ref.mu_l_evap, 2300)
-        Nu_l = 0.023 * Re_l**0.8 * ref.Pr_l_evap**0.4
-        h_l  = Nu_l * ref.k_l_evap / D
-        Co = ((1-x_clip)/x_clip)**0.8 * (ref.rho_v_evap/ref.rho_l_evap)**0.5
-        Bo = max((Q_seg or 3000) / (geo['A_i'] / max(getattr(spec,'tube_rows',2),1) * G_ref * h_fg + 1e-3), 1e-5)
-        if Co > 0.65:
-            psi = 1.8 / Co**0.8
+        # ── Shah (1982) 증발 — Chart Correlation ──
+        # Convection number
+        Co = ((1-x_clip)/x_clip)**0.8 * (rho_v/rho_l)**0.5
+
+        # Boiling number — 정석: q'' / (G × h_fg)
+        Nr = max(getattr(spec, 'tube_rows', 2), 1)
+        Nt = max(getattr(spec, 'tube_cols', 1), 1)
+        N_seg = 10  # 기본 세그먼트 수
+        A_i_seg = geo['A_i'] / (Nr * Nt * N_seg)
+        q_flux = max((Q_seg or 15.0) / (A_i_seg + 1e-9), 100.0)
+        Bo = q_flux / (G_ref * h_fg)
+
+        # Froude number (수평 튜브)
+        Fr_l = G_ref**2 / (rho_l**2 * 9.81 * D)
+
+        # N parameter (Shah 1982)
+        if Fr_l >= 0.04:
+            N = Co
         else:
-            psi = max(1.8/Co**0.8, 0.6683*Co**(-0.2) + 1058*Bo**0.7)
-        h_2ph = h_l * psi
+            N = Co * 0.38 * Fr_l**(-0.3)
+
+        # ψ (Chart correlation, Shah 1982 Table 2)
+        # Regime: CB (convective boiling) vs NB (nucleate boiling)
+        psi_cb = 1.8 / max(N, 0.01)**0.8
+
+        if N > 1.0:
+            # Nucleate boiling dominant regime
+            if Bo > 0.3e-4:
+                psi_nb = 230 * Bo**0.5
+            else:
+                psi_nb = 1.0 + 46 * Bo**0.5
+            psi = max(psi_nb, psi_cb)
+        else:
+            # Convective boiling dominant regime (N ≤ 1.0)
+            if 0.1 < N <= 1.0:
+                F_s = 14.7 if Bo >= 11e-4 else 15.43
+                psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.1))
+            else:  # N ≤ 0.1
+                F_s = 14.7 if Bo >= 11e-4 else 15.43
+                psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.15))
+            psi = max(psi_cb, psi_bs)
+
+        h_2ph = h_lo * psi
+
     else:
-        # Shah (1979)
-        mu_l = CP.PropsSI('V', 'T', T_sat_K, 'Q', 0, rf)
-        k_l  = CP.PropsSI('L', 'T', T_sat_K, 'Q', 0, rf)
-        Pr_l = CP.PropsSI('Prandtl', 'T', T_sat_K, 'Q', 0, rf)
-        Re_l = G_ref * D / mu_l
-        h_l  = 0.023 * Re_l**0.8 * Pr_l**0.4 * k_l / D
+        # ── Shah (1979) 응축 ──
+        Re_lo = G_ref * D / mu_l
+        h_lo = 0.023 * max(Re_lo, 2300)**0.8 * Pr_l**0.4 * k_l / D
         Z = (1/x_clip - 1)**0.8 * (P_sat / CP.PropsSI('Pcrit', rf))**0.4
-        h_2ph = h_l * (1 + 3.8 / max(Z, 0.01)**0.95)
+        h_2ph = h_lo * (1 + 3.8 / max(Z, 0.01)**0.95)
 
     # ── 전이 블렌딩 (x = 0.90~1.05) ──
     if 0.90 < x <= 1.05:
-        mu_v = CP.PropsSI('V', 'T', T_sat_K, 'Q', 1, rf)
-        k_v  = CP.PropsSI('L', 'T', T_sat_K, 'Q', 1, rf)
-        Pr_v = CP.PropsSI('Prandtl', 'T', T_sat_K, 'Q', 1, rf)
-        Re_v = G_ref * D / mu_v
-        h_vapor = gnielinski_htc(Re_v, Pr_v, k_v, D)
-        w = np.clip((x - 0.90) / 0.15, 0, 1)  # 0.90→0, 1.05→1
-        h_blend = (1 - w) * h_2ph + w * h_vapor
-        return h_blend, 'transition'
+        mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
+        k_v  = CP.PropsSI('L','T',T_sat_K,'Q',1,rf)
+        Pr_v = CP.PropsSI('Prandtl','T',T_sat_K,'Q',1,rf)
+        h_vapor = gnielinski_htc(G_ref*D/mu_v, Pr_v, k_v, D)
+        w = np.clip((x - 0.90) / 0.15, 0, 1)
+        return (1 - w) * h_2ph + w * h_vapor, 'transition'
 
     # ── 과냉 전이 (-0.05 ~ 0) ──
     if -0.05 <= x < 0:
-        mu_l = CP.PropsSI('V', 'T', T_sat_K, 'Q', 0, rf)
-        k_l  = CP.PropsSI('L', 'T', T_sat_K, 'Q', 0, rf)
-        Pr_l = CP.PropsSI('Prandtl', 'T', T_sat_K, 'Q', 0, rf)
-        Re_l = G_ref * D / mu_l
-        h_sub = gnielinski_htc(Re_l, Pr_l, k_l, D)
+        h_sub = gnielinski_htc(Re_lo, Pr_l, k_l, D)
         w = np.clip((x + 0.05) / 0.05, 0, 1)
         return (1 - w) * h_sub + w * h_2ph, 'transition'
 
@@ -1705,20 +1726,6 @@ def apply_style():
 # ═══════════════════════════════════════════════════════════════════
 #  Level 1 코일 모델 — Row × Phase-zone 세그먼트
 # ═══════════════════════════════════════════════════════════════════
-
-def gnielinski_htc(Re, Pr, k, D):
-    """
-    Gnielinski (1976) 단상 HTC
-    Nu = (f/8)(Re-1000)Pr / [1 + 12.7√(f/8)(Pr^(2/3)-1)]
-    유효: 2300 < Re < 5e6, 0.5 < Pr < 2000
-    """
-    Re = max(Re, 2300)
-    f = (0.790 * np.log(Re) - 1.64)**(-2)
-    Nu = (f / 8) * (Re - 1000) * Pr / \
-         (1 + 12.7 * np.sqrt(f / 8) * (Pr**(2/3) - 1) + 1e-9)
-    Nu = max(Nu, 3.66)  # 층류 하한
-    return Nu * k / D
-
 
 def _ref_vapor_props(ref, T_vapor_K):
     """과열 증기 물성 (CoolProp)"""
