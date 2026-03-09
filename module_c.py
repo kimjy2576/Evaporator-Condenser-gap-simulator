@@ -125,6 +125,40 @@ def f_factor_ft_staggered(spec, geo: dict, V_face: float, N_r: int = None) -> di
 
 
 
+def f_factor_ft_staggered_kyw(spec, geo: dict, V_face: float, N_r: int = None) -> dict:
+    """
+    Fin-Tube Staggered f-factor — Kim, Youn & Webb (1999)
+    ASME J.Heat Transfer 121(3):662-667
+    중첩 모델: dp = dp_tube + dp_fin → f_eff 역산
+    넓은 기하 범위 (St/D: 2~4.5, Sl/D: 1.5~3)
+    """
+    if N_r is None:
+        N_r = spec.tube_rows
+    Dc = geo.get('Dc', spec.tube_do + 2*spec.fin_thickness)
+    G = RHO_AIR * V_face / geo['sigma']
+    Re = np.clip(G * Dc / MU_AIR, 200, 10000)
+    s = spec.fin_pitch - spec.fin_thickness
+    Pt = spec.tube_pitch_t; Pl = spec.tube_pitch_l
+    Re_s = Re * s / Dc
+
+    # Tube bank — Jakob (1938)
+    f_t = (0.25 + 0.1175 / max(Pt/Dc - 1, 0.1)**1.08) * Re**(-0.16)
+    # Fin friction — KYW Eq.(6)
+    f_f = 1.455 * Re_s**(-0.656) * (Pt/Pl)**(-0.347) * (s/Dc)**(-0.134)
+
+    A_fin = geo.get('A_fin', geo.get('A_louver', geo['A_total']*0.85))
+    A_total = geo['A_total']; Ac = geo['Ac']
+
+    dp_tube = f_t * 4 * N_r * Pl / (np.pi * Dc) * G**2 / (2*RHO_AIR)
+    dp_fin = f_f * (A_fin / Ac) * G**2 / (2*RHO_AIR)
+    f_eff = (dp_tube + dp_fin) / ((A_total/Ac) * G**2/(2*RHO_AIR) + 1e-9)
+    f_eff = np.clip(f_eff, 0.005, 0.15)
+
+    return dict(f=f_eff, Re_Dc=Re, G=G, layout='staggered',
+                f_tube=f_t, f_fin=f_f, model='KYW1999')
+
+
+
 # ─── FT Inline ───────────────────────────────────────────────────
 
 def f_factor_ft_inline(spec, geo: dict, V_face: float, N_r: int = None) -> dict:
@@ -388,11 +422,13 @@ def f_factor_ft_inline(spec, geo: dict, V_face: float, N_r: int = None) -> dict:
 
 def f_factor_ft(spec, geo: dict, V_face: float, N_r: int = None) -> dict:
     """
-    FT f-factor — fin_type × tube_layout × corr_mode 분기
+    FT f-factor — 상관식 자동 선택 + 핀 타입 보정
 
-    spec.corr_mode:
-      'etype'  — f_plain × E_f (기본, 검증됨)
-      'direct' — 핀별 독립 f 상관식 (미구현 시 etype fallback)
+    기하 범위에 따라 최적 상관식 자동 선택:
+      Pt/Pl ≤ 1.35 → Wang(2000): 정확도 높음 (검증 범위 내)
+      Pt/Pl > 1.35  → Kim-Youn-Webb(1999): 넓은 범위, 물리 기반
+
+    핀 타입 보정: f_plain × E_fin (wavy, louver, slit)
     """
     mode = getattr(spec, 'corr_mode', 'etype').lower()
     layout = getattr(spec, 'tube_layout', 'staggered').lower()
@@ -401,13 +437,17 @@ def f_factor_ft(spec, geo: dict, V_face: float, N_r: int = None) -> dict:
         result = _f_factor_ft_direct(spec, geo, V_face, layout, N_r)
         if result is not None:
             return result
-        # fallback to etype
 
-    # etype 모드 (기본)
+    # Staggered: 기하 범위에 따라 Wang/KYW 자동 선택
     if layout in ('inline', 'parallel'):
         result = f_factor_ft_inline(spec, geo, V_face, N_r)
     else:
-        result = f_factor_ft_staggered(spec, geo, V_face, N_r)
+        Pt_Pl = spec.tube_pitch_t / max(spec.tube_pitch_l, 1e-6)
+        if Pt_Pl > 1.35:
+            # Wang(2000) 범위 밖 → KYW(1999) 사용
+            result = f_factor_ft_staggered_kyw(spec, geo, V_face, N_r)
+        else:
+            result = f_factor_ft_staggered(spec, geo, V_face, N_r)
 
     Re = result.get('Re_Dc', 1000)
     E_fin = _f_fin_type_enhancement(spec, Re)
@@ -415,7 +455,7 @@ def f_factor_ft(spec, geo: dict, V_face: float, N_r: int = None) -> dict:
     result['f'] = np.clip(result['f'], 0.005, 0.50)
     result['fin_type'] = getattr(spec, 'fin_type', 'plain')
     result['E_fin'] = E_fin
-    result['corr_mode'] = 'etype'
+    result['corr_mode'] = result.get('model', 'etype')
 
     return result
 
