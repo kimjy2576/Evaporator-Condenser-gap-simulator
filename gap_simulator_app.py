@@ -429,6 +429,7 @@ if run_btn:
 #  결과
 # ═══════════════════════════════════════════════════════════
 if 'results' in st.session_state and st.session_state.results:
+  try:
     res=st.session_state.results; gaps=res['gaps']; tag=res['tag']
     i50=np.argmin(np.abs(gaps-50)); r50=res['results_a'][i50]
     c1,c2,c3,c4,c5=st.columns(5)
@@ -482,6 +483,12 @@ if 'results' in st.session_state and st.session_state.results:
             "Mode":res['gap_d']['gap_mode'],"V_face":f"{res['V_face']:.2f}m/s",
             "Evap":res['evap'].hx_type,"Cond":res['cond'].hx_type,
             "UA_e":f"{res['ua_e']['UA']:.1f}W/K","UA_c":f"{res['ua_c']['UA']:.1f}W/K"})
+  except Exception as e:
+    st.error(f"결과 표시 오류: {e}")
+    st.info("설정 변경 후 **▶ 해석 실행**을 다시 클릭하세요.")
+    if st.button("🔄 결과 초기화"):
+        del st.session_state['results']
+        st.rerun()
 else:
     st.info("👈 사이드바에서 설정 후 **▶ 해석 실행** 클릭")
     st.markdown("""
@@ -506,7 +513,16 @@ def _load_doc(name):
             with open(p,'r',encoding='utf-8') as f: return f.read()
     return f"⚠️ `{name}` 파일을 찾을 수 없습니다. `docs/` 폴더를 확인하세요."
 
-with doc1: st.markdown(_load_doc("DOC_GUIDE.md"))
-with doc2: st.markdown(_load_doc("DOC_EVAL.md"))
-with doc3: st.markdown(_load_doc("DOC_STRUCTURE.md"))
-with doc4: st.markdown(_load_doc("DOC_MATH.md"))
+def _safe_md(name, tab):
+    with tab:
+        try:
+            txt = _load_doc(name)
+            # Streamlit markdown에서 $ 충돌 방지
+            st.markdown(txt, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"문서 렌더링 오류: {e}")
+
+_safe_md("DOC_GUIDE.md", doc1)
+_safe_md("DOC_EVAL.md", doc2)
+_safe_md("DOC_STRUCTURE.md", doc3)
+_safe_md("DOC_MATH.md", doc4)
