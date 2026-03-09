@@ -27,7 +27,8 @@ matplotlib.rcParams['savefig.dpi'] = 200
 from common import (
     FinTubeSpec, MCHXSpec, RefrigerantState, DARK, C,
     compute_ft_geometry, compute_mchx_geometry, compute_UA,
-    compute_coil_performance_segmented,
+    compute_coil_performance_segmented, compute_coil_v3,
+    select_correlations, print_correlation_summary,
     FLUX_CAUTION, FLUX_DANGER, FLUX_SEVERE,
 )
 from module_a import GapParams, simulate_gap, sweep
@@ -281,6 +282,15 @@ with st.sidebar:
         gap_max = st.number_input("Gap Max [mm]",0,200,100,key='gap_max')
         gap_pts = st.slider("포인트 수",0,50,25,key='gap_pts')
 
+    with st.expander("🔬 Level 2 코일 모델", expanded=False):
+        st.caption("Tube-Segment 상세 모델 (160 element)")
+        l2_enable = st.checkbox("Level 2 활성화", value=False, key='l2_enable')
+        l2_m_ref = st.number_input("냉매 유량 [kg/s]", 0.001, 0.1, 0.00458, format="%.5f", key='l2_m_ref')
+        l2_x_in = st.number_input("입구 건도 x_in", 0.0, 1.0, 0.22, format="%.2f", key='l2_x_in')
+        l2_flow = st.selectbox("유동 배열", ['counter', 'parallel'], key='l2_flow')
+        l2_evap_corr = st.selectbox("증발 상관식", ['auto', 'gungor_winterton', 'shah'], key='l2_corr')
+        l2_nseg = st.slider("세그먼트/튜브", 5, 20, 10, key='l2_nseg')
+
     st.divider()
     run_btn = st.button("▶ 해석 실행", type="primary", use_container_width=True)
     st.divider()
@@ -402,7 +412,9 @@ def run_analysis(cfg):
     return dict(gaps=gaps,results_a=results_a,result_b=result_b,result_c=result_c,
         carry_penalty=cp,viz_b=vb,evap=evap,cond=cond,ref=ref,gp=gp,
         geo_e=geo_e,geo_c=geo_c,ua_e=ua_e,ua_c=ua_c,tag=tag,V_face=V_face,
-        gap_d=gd,inlet=inlet,label=tag)
+        gap_d=gd,inlet=inlet,label=tag,
+        corr_evap=select_correlations(evap,geo_e,ref,'evap'),
+        corr_cond=select_correlations(cond,geo_c,ref,'cond'))
 
 def make_df(res):
     rows=[]
@@ -440,6 +452,9 @@ if 'results' in st.session_state and st.session_state.results:
     fl50=res['result_b']['flux_arr'][i50]
     c5.metric("Risk",('SAFE' if fl50<FLUX_CAUTION else 'CAUTION' if fl50<FLUX_DANGER else 'DANGER' if fl50<FLUX_SEVERE else 'SEVERE'))
     st.caption(f"**{tag}** | V={res['V_face']:.2f}m/s | UA_e={res['ua_e']['UA']:.1f}W/K | η_o={res['ua_e']['eta_o']:.3f}")
+    ce=res.get('corr_evap',{})
+    if ce:
+        st.caption(f"📋 상관식: j={ce.get('air_j','?')} | f={ce.get('air_f','?')} | h_i={ce.get('ref_htc','?')}")
 
     # 고화질 렌더링 함수
     def show_fig(fig, dpi=200):
@@ -449,7 +464,7 @@ if 'results' in st.session_state and st.session_state.results:
         st.image(buf, use_container_width=True)
         plt.close(fig)
 
-    ta,tb,tc,ts,tcmp,td=st.tabs(["🌡️ A 냉방","💧 B 비말","📊 C 압강","🖼️ 개략도","📈 비교","📋 데이터"])
+    ta,tb,tc,ts,tl2,tcmp,td=st.tabs(["🌡️ A 냉방","💧 B 비말","📊 C 압강","🖼️ 개략도","🔬 Level 2","📈 비교","📋 데이터"])
     with ta:
         f=make_single_fig_a(gaps,res['results_a'],res['gp'],res['ref'],tag); show_fig(f)
     with tb:
@@ -464,6 +479,100 @@ if 'results' in st.session_state and st.session_state.results:
             show_fig(f)
         elif os.path.exists("gap_schematic.png"):
             st.image("gap_schematic.png",use_container_width=True)
+    with tl2:
+        # ── 상관식 자동 선택 표시 ──
+        st.subheader("📋 자동 선택된 상관식")
+        ce=res.get('corr_evap',{}); cc_=res.get('corr_cond',{})
+        col_e, col_c = st.columns(2)
+        with col_e:
+            st.markdown("**증발기**")
+            st.markdown(f"- **공기 j**: {ce.get('air_j_ref','N/A')}")
+            st.markdown(f"- **공기 f**: {ce.get('air_f_ref','N/A')}")
+            st.markdown(f"- **냉매 h_i**: {ce.get('ref_htc_ref','N/A')}")
+            st.markdown(f"- **단상**: {ce.get('single_phase_ref','N/A')}")
+            st.markdown(f"- **핀효율**: {ce.get('eta_fin','N/A')}")
+            if ce.get('warnings'):
+                for w in ce['warnings']:
+                    st.warning(f"⚠️ {w}")
+        with col_c:
+            st.markdown("**응축기**")
+            st.markdown(f"- **공기 j**: {cc_.get('air_j_ref','N/A')}")
+            st.markdown(f"- **공기 f**: {cc_.get('air_f_ref','N/A')}")
+            st.markdown(f"- **냉매 h_i**: {cc_.get('ref_htc_ref','N/A')}")
+            st.markdown(f"- **단상**: {cc_.get('single_phase_ref','N/A')}")
+            st.markdown(f"- **핀효율**: {cc_.get('eta_fin','N/A')}")
+            if cc_.get('warnings'):
+                for w in cc_['warnings']:
+                    st.warning(f"⚠️ {w}")
+
+        # ── Level 2 실행 ──
+        st.divider()
+        if l2_enable:
+            st.subheader("🔬 Tube-Segment 상세 해석")
+            with st.spinner("Level 2 계산 중..."):
+                try:
+                    l2 = compute_coil_v3(res['evap'], res['geo_e'], res['ref'],
+                        res['gap_d']['T_amb'], res['gap_d']['RH_in'], res['V_face'],
+                        l2_m_ref, l2_x_in, 'evap', l2_nseg, l2_flow, l2_evap_corr)
+
+                    # 요약 메트릭
+                    mc1,mc2,mc3,mc4 = st.columns(4)
+                    mc1.metric("Q_total", f"{l2['Q_total']:.0f}W")
+                    mc2.metric("Q_lat", f"{l2['Q_lat']:.0f}W")
+                    mc3.metric("SHR", f"{l2['SHR']:.3f}")
+                    mc4.metric("x_out", f"{l2['x_out']:.3f}")
+
+                    st.caption(f"Flow: {l2['flow']} | Corr: {l2['correlations']['ref_htc']} | "
+                              f"Segments: {l2['N_total_seg']} | Phase: {l2['phase_summary']}")
+
+                    # Row별 Q
+                    st.markdown("**Row별 열량 분포**")
+                    row_df = pd.DataFrame([
+                        {"Row": r, "Q [W]": f"{l2['Q_per_row'][r]:.0f}"}
+                        for r in range(len(l2['Q_per_row']))
+                    ])
+                    st.dataframe(row_df, use_container_width=True, hide_index=True)
+
+                    # Tube별 상세
+                    st.markdown("**Tube별 상세**")
+                    tube_rows = []
+                    for t in l2['tubes']:
+                        avg_tw = np.mean([s['T_wall'] for s in t['segments']])
+                        n_wet = sum(1 for s in t['segments'] if s['is_wet'])
+                        tube_rows.append({
+                            "Tube": t['tube'], "Row": t['row'],
+                            "Phase": t['phase_dominant'],
+                            "x_in": f"{t['x_in']:.3f}", "x_out": f"{t['x_out']:.3f}",
+                            "h_i": f"{t['h_i_avg']:.0f}",
+                            "T_wall": f"{avg_tw:.1f}°C",
+                            "Q [W]": f"{t['Q']:.1f}",
+                            "Wet": f"{n_wet}/{l2_nseg}",
+                        })
+                    tube_df = pd.DataFrame(tube_rows)
+                    st.dataframe(tube_df, use_container_width=True, hide_index=True)
+
+                    # x 분포 차트
+                    st.markdown("**건도(x) 분포**")
+                    segs = [s for t in l2['tubes'] for s in t['segments']]
+                    fig_x, ax_x = plt.subplots(figsize=(10, 3))
+                    seg_idx = list(range(len(segs)))
+                    x_vals = [s['x_in'] for s in segs]
+                    colors = ['#0077cc' if s['phase']=='two_phase' else
+                             '#e67e22' if s['phase']=='transition' else
+                             '#d63031' for s in segs]
+                    ax_x.bar(seg_idx, x_vals, color=colors, width=1.0, alpha=0.7)
+                    ax_x.axhline(1.0, color='#d63031', ls='--', lw=0.8, alpha=0.5)
+                    ax_x.set_xlabel("Segment #"); ax_x.set_ylabel("Quality x")
+                    ax_x.set_title("냉매 건도 분포 (Blue=2ph, Orange=transition, Red=SH)")
+                    fig_x.tight_layout()
+                    show_fig(fig_x)
+
+                except Exception as e:
+                    st.error(f"Level 2 오류: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+        else:
+            st.info("사이드바 **🔬 Level 2 코일 모델** 에서 활성화하세요.")
     with tcmp:
         cs=st.session_state.get('cases',[])
         if len(cs)<2: st.info("비교: 사이드바에서 **+ 케이스 추가** 2회 이상")
@@ -496,6 +605,7 @@ else:
     - **Module A** — Gap 열손실 → Cap Retention
     - **Module B** — 비말동반 → Risk 등급
     - **Module C** — 압력강하 → 시스템 ΔP
+    - **🔬 Level 2** — Tube-Segment 상세 모델 (160 element, T_wall 수렴, 상관식 자동 선택)
     
     Threlkeld 정석 ε-NTU + Tube-Row Segment. **FT / MCHX** 모두 지원.
     """)
