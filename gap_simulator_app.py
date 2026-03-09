@@ -262,7 +262,7 @@ with st.sidebar:
                 c_tube_mat = st.selectbox("튜브재질 ",["Al","Cu"],key='c_mchx_tmat')
 
     with st.expander("운전 조건", expanded=True):
-        T_amb = st.number_input("T_amb [°C]",0.0,45.0,27.0,0.5,key='T_amb')
+        T_amb = st.number_input("T_amb [°C]",-20.0,60.0,27.0,0.5,key='T_amb')
         RH_in = st.slider("RH",0.0,0.95,0.70,0.05,key='RH_in')
         CMM = st.number_input("CMM",0.0,30.0,6.75,0.5,key='CMM')
         gap_mode = st.selectbox("Gap Mode",["open","semi","sealed"],index=1,key='gap_mode')
@@ -273,8 +273,8 @@ with st.sidebar:
 
     with st.expander("냉매", expanded=False):
         refrigerant = st.selectbox("냉매",["R410A","R32","R134a","R290","R1234yf"],key='refr')
-        T_evap = st.number_input("T_evap [°C]",-10.0,20.0,5.0,0.5,key='T_evap')
-        T_cond = st.number_input("T_cond [°C]",0.0,65.0,45.0,0.5,key='T_cond')
+        T_evap = st.number_input("T_evap [°C]",-50.0,50.0,5.0,0.5,key='T_evap')
+        T_cond = st.number_input("T_cond [°C]",-20.0,120.0,45.0,0.5,key='T_cond')
 
     with st.expander("시뮬레이션 범위", expanded=False):
         gap_min = st.number_input("Gap Min [mm]",0,50,5,key='gap_min')
