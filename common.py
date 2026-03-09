@@ -267,28 +267,32 @@ class RefrigerantState:
 def compute_ft_geometry(spec: FinTubeSpec) -> dict:
     """Fin-Tube: 공기측 면적, 핀 효율, UA 계산
 
-    [수정] plate fin 면적: 각 핀이 W × D 전체를 덮음
-    기존 코드는 fin_height(=Pt, 25.4mm)만큼의 폭으로 계산 → 12배 과소
+    [핀 방향] plate fin-tube HX:
+    - 튜브: W 방향(가로)으로 관통
+    - 핀: H×D 면 (높이×깊이), W 방향으로 Fp 간격 적층
+    - Nf = W / Fp (튜브 길이 방향 핀 수)
+    - CoilDesigner 검증: A_fin=0.7325 m² 일치 (±1.5%)
     """
-    Nf = int(spec.H / spec.fin_pitch)   # 핀 개수 (높이 방향)
+    Nf = int(spec.W / spec.fin_pitch)    # 핀 개수 (W 방향 적층)
     Nt = spec.tube_cols                   # 튜브 열 (높이 방향)
     Nr = spec.tube_rows                   # 튜브 행 (깊이 방향)
     N_tubes = Nr * Nt                     # 총 튜브 수
+    Dc = spec.tube_do + 2 * spec.fin_thickness  # collar diameter
 
     # 최소 유로 면적비
     sigma = (spec.fin_pitch - spec.fin_thickness) / spec.fin_pitch * \
-            (spec.tube_pitch_t - spec.tube_do) / spec.tube_pitch_t
+            (spec.tube_pitch_t - Dc) / spec.tube_pitch_t
     Afr = spec.W * spec.H
     Ac  = sigma * Afr
 
-    # ── 핀 면적 (plate fin: W × D 전체) ──
-    # 1개 핀: 양면 × (전체 판 면적 - 튜브 관통 구멍)
-    A_fin_one = 2 * (spec.W * spec.D - N_tubes * np.pi * spec.tube_do**2 / 4)
-    A_fin = A_fin_one * Nf
+    # ── 핀 면적 (plate fin: H × D 면, W 방향 적층) ──
+    # 1개 핀: 양면 × (H×D 판 면적 - 튜브 관통 구멍, collar 포함)
+    A_fin_one = 2 * (spec.H * spec.D - N_tubes * np.pi * Dc**2 / 4)
+    A_fin = max(A_fin_one, 0) * Nf
 
     # ── 튜브 노출 면적 (핀 사이 간격) ──
-    # 각 튜브: π×Do × W(튜브 길이) × (1 - δ_fin/Fp)(핀이 점유하지 않는 비율)
-    A_tube = np.pi * spec.tube_do * spec.W * (1 - spec.fin_thickness / spec.fin_pitch) * N_tubes
+    # 각 튜브: π×Dc × W(튜브 길이) × (1 - δ_fin/Fp)(핀이 점유하지 않는 비율)
+    A_tube = np.pi * Dc * spec.W * (1 - spec.fin_thickness / spec.fin_pitch) * N_tubes
     A_total = A_fin + A_tube
 
     # 핀 효율 (초기 추정, compute_UA에서 재계산)
@@ -314,8 +318,7 @@ def compute_ft_geometry(spec: FinTubeSpec) -> dict:
     R_wall = np.log(spec.tube_do / spec.tube_di) / \
              (2 * np.pi * k_tube * spec.W * N_tubes)
 
-    # ── 수력직경, 칼라직경 ──
-    Dc = spec.tube_do + 2 * spec.fin_thickness  # collar diameter
+    # ── 수력직경 ──
     Lc = Nr * spec.tube_pitch_l  # 코어 깊이 (공기흐름 방향)
     Dh = 4 * Ac * Lc / (A_total + 1e-9)  # 수력직경 (Wang 2000)
 
