@@ -394,13 +394,21 @@ def run_analysis(cfg):
     et=f"{evap.fin_type.capitalize()} {evap.tube_layout[0].upper()}" if evap.hx_type=='FT' else 'MCHX'
     tag=f"{et} | {ref.refrigerant} | T_evap={ref.T_sat_evap}°C | CMM={gp.CMM} | {gp.gap_mode}"
     results_a=sweep(gaps,evap,cond,geo_e,geo_c,ua_e,ua_c,ref,gp,
-                    l2_m_ref,l2_x_in,l2_corr,l2_flow,l2_nseg)
+                    st.session_state.get('l2_m_ref',0.00458),
+                    st.session_state.get('l2_x_in',0.22),
+                    st.session_state.get('l2_corr','auto'),
+                    st.session_state.get('l2_flow','counter'),
+                    st.session_state.get('l2_nseg',5))
     case_b=dict(name=tag,T_in=gd['T_amb'],RH_in=gd['RH_in'],CMM=gd['CMM'],T_wall=ref.T_sat_evap,
         gap_mm=20,theta_deg=0,eta_coeff=5e-4,w_bridge=0.75,gap_mode=gd['gap_mode'],
         seal_fraction=gd.get('seal_fraction',0.7),hx_type=evap.hx_type,
         tube_layout=getattr(evap,'tube_layout','staggered'))
     result_b=analyze_combined(case_b,gaps,evap,geo_e,cond,geo_c,ua_e,ua_c,ref,
-                              l2_m_ref,l2_x_in,l2_corr,l2_flow,l2_nseg)
+                              st.session_state.get('l2_m_ref',0.00458),
+                              st.session_state.get('l2_x_in',0.22),
+                              st.session_state.get('l2_corr','auto'),
+                              st.session_state.get('l2_flow','counter'),
+                              st.session_state.get('l2_nseg',5))
     cp=compute_carry_penalty(result_b,evap,geo_e,gaps,ref.T_sat_cond); apply_carry_penalty(results_a,cp)
     inlet=InletCondition(T_in=gd['T_amb'],RH_in=gd['RH_in'],CMM=gd['CMM'],T_wall_evap=ref.T_sat_evap)
     result_c=sweep_dp(gaps,evap,cond,geo_e,geo_c,inlet)
