@@ -314,12 +314,18 @@ def compute_ft_geometry(spec: FinTubeSpec) -> dict:
     R_wall = np.log(spec.tube_do / spec.tube_di) / \
              (2 * np.pi * k_tube * spec.W * N_tubes)
 
+    # ── 수력직경, 칼라직경 ──
+    Dc = spec.tube_do + 2 * spec.fin_thickness  # collar diameter
+    Lc = Nr * spec.tube_pitch_l  # 코어 깊이 (공기흐름 방향)
+    Dh = 4 * Ac * Lc / (A_total + 1e-9)  # 수력직경 (Wang 2000)
+
     return dict(
         Ac=Ac, Afr=Afr, A_fin=A_fin, A_tube=A_tube,
         A_total=A_total, A_i=A_i,
         eta_o=eta_o, eta_fin=eta_fin,
         R_wall=R_wall, sigma=sigma,
         N_tubes=N_tubes, depth=spec.D,
+        Dc=Dc, Dh=Dh, Lc=Lc,
     )
 
 
@@ -368,14 +374,42 @@ def compute_mchx_geometry(spec: MCHXSpec) -> dict:
 #   Slit:     Wang et al. (2001) / Nakayama & Xu (1983) 기반
 # ─────────────────────────────────────────────────────────────────
 
-def _j_plain_staggered(Re, spec):
-    """Plain fin, Staggered — Wang (2000) Part I"""
-    Fp = spec.fin_pitch; Dc = spec.tube_do; Nr = spec.tube_rows
+def _j_plain_staggered(Re, spec, geo=None):
+    """Plain fin, Staggered — Wang, Chi & Chang (2000) IJHMT 43(15):2693-2700
+    Table 3 원논문 정확 구현 (Dc, Dh 사용)"""
+    Fp = spec.fin_pitch
+    Dc = geo['Dc'] if geo and 'Dc' in geo else spec.tube_do + 2*spec.fin_thickness
+    Dh = geo['Dh'] if geo and 'Dh' in geo else 2e-3  # fallback
+    Nr = spec.tube_rows
+    Pt = spec.tube_pitch_t
+    Pl = spec.tube_pitch_l
     Re = np.clip(Re, 300, 20000)
-    return max(0.003, 0.49 * Re**(-0.43) * (Fp/Dc)**(-0.14) * Nr**(-0.29))
+    ln_Re = np.log(Re + 1e-9)
+
+    if Nr == 1:
+        # Nr=1 case (Wang Table 3)
+        p1 = -0.991 - 0.1055*(Pt/Pl)**3.1 * np.log(Re)
+        p2 = -0.7344 + 2.1059*Nr**0.55 / ln_Re
+        j = 0.108 * Re**(-0.29) * (Pt/Pl)**p1 * (Fp/Dc)**p2 * Nr**(-0.031)
+    elif Re < 1000:
+        # Nr>=2, Re<1000
+        p3 = -0.361 - 0.042*Nr/ln_Re + 0.158*np.log(Nr*(Fp/Dc)**0.41)
+        p4 = -1.224 - 0.076*(Pl/Dh)**1.42 / ln_Re
+        p5 = -0.083 + 0.058*Nr/ln_Re
+        p6 = -5.735 + 1.21*np.log(Re/Nr)
+        j = 0.086 * Re**p3 * Nr**p4 * (Fp/Dc)**p5 * (Fp/Dh)**p6 * (Fp/Pt)**(-0.93)
+    else:
+        # Nr>=2, Re>=1000
+        p3 = -0.361 - 0.042*Nr/ln_Re + 0.158*np.log(Nr*(Fp/Dc)**0.41)
+        p4 = -1.224 - 0.076*(Pl/Dh)**1.42 / ln_Re
+        p5 = -0.083 + 0.058*Nr/ln_Re
+        p6 = -5.735 + 1.21*np.log(Re/Nr)
+        j = 0.086 * Re**p3 * Nr**p4 * (Fp/Dc)**p5 * (Fp/Dh)**p6 * (Fp/Pt)**(-0.93)
+
+    return max(0.002, j)
 
 
-def _j_wavy_staggered(Re, spec):
+def _j_wavy_staggered(Re, spec, geo=None):
     """
     Wavy fin — Yan & Sheen (2000) 직접 비교 기반 보정
 
@@ -395,7 +429,7 @@ def _j_wavy_staggered(Re, spec):
     외삽: 3000 < Re_Dc ≤ 18000 (감쇠 모델 기반, 미검증)
     기하: Xf=1.18~1.58mm, Fp=1.2~2.6mm, α=15~25°, Nr=1~4
     """
-    j_plain = _j_plain_staggered(Re, spec)
+    j_plain = _j_plain_staggered(Re, spec, geo)
     Xf = spec.wavy_height; Fp = spec.fin_pitch; alpha = spec.wavy_angle
     Re_c = np.clip(Re, 300, 18000)
     E_base = 1.05 + 0.222 * (Xf / Fp)**0.40 * (alpha / 20.0)**0.25
@@ -404,7 +438,7 @@ def _j_wavy_staggered(Re, spec):
     return max(0.003, j_plain * np.clip(E_w, 1.05, 1.35))
 
 
-def _j_louvered_staggered(Re, spec):
+def _j_louvered_staggered(Re, spec, geo=None):
     """
     Louvered fin — Yan & Sheen (2000), Wang (1999) IJHMT 42(1):1
 
@@ -423,7 +457,7 @@ def _j_louvered_staggered(Re, spec):
     외삽: 3000 < Re_Dc ≤ 15000 (상수 E 가정, 미검증)
     기하: Lp=1.2~2.5mm, Fp=1.2~2.0mm, θ=20~35°, Nr=1~4
     """
-    j_plain = _j_plain_staggered(Re, spec)
+    j_plain = _j_plain_staggered(Re, spec, geo)
     Lp = spec.ft_louver_pitch; Fp = spec.fin_pitch; theta = spec.ft_louver_angle
     Re_c = np.clip(Re, 300, 15000)
     E_base = 1.10 + 0.311 * (Lp / Fp)**0.25 * (theta / 30.0)**0.30
@@ -431,7 +465,7 @@ def _j_louvered_staggered(Re, spec):
     return max(0.004, j_plain * np.clip(E_l, 1.20, 1.55))
 
 
-def _j_slit_staggered(Re, spec):
+def _j_slit_staggered(Re, spec, geo=None):
     """
     Slit fin (랜스형) — Wang (2001) IJHMT 44:3565, Du & Wang (2000)
 
@@ -452,78 +486,43 @@ def _j_slit_staggered(Re, spec):
     외삽: 300~800, 2500~12000 (상수 E 가정, 미검증)
     기하: Ns=4~10, Sh=0.8~1.5mm, Fp=1.2~2.0mm, Nr=1~6
     """
-    j_plain = _j_plain_staggered(Re, spec)
+    j_plain = _j_plain_staggered(Re, spec, geo)
     Ns = spec.slit_num; Sh = spec.slit_height; Fp = spec.fin_pitch
     E_s = 1.15 + 0.12 * min(Ns, 10)**0.30 * (Sh / Fp)**0.20
     return max(0.003, j_plain * np.clip(E_s, 1.20, 1.50))
 
 
-def _j_ft_staggered(Re, spec):
-    """FT Staggered j-factor — 핀 타입(4종) × 상관식 모드(2종) 분기
-
-    spec.corr_mode:
-      'etype'  — E_type 보정 모델 (기본, 검증됨)
-                  j_type = j_plain × E_type(Re, 기하)
-                  MAE=2.5%, 12개 문헌 데이터 ±10% 이내
-
-      'direct' — 직접 상관식 모드 (구현 시)
-                  각 핀별 독립 상관식 직접 사용
-                  미구현 핀은 etype으로 fallback
-    """
+def _j_ft_staggered(Re, spec, geo=None):
+    """FT Staggered j-factor — 핀 타입(4종) × 상관식 모드(2종) 분기"""
     ft = getattr(spec, 'fin_type', 'plain').lower()
     mode = getattr(spec, 'corr_mode', 'etype').lower()
 
     if mode == 'direct':
-        return _j_ft_staggered_direct(Re, spec, ft)
+        return _j_ft_staggered_direct(Re, spec, ft, geo)
     else:
-        # etype 모드 (기본)
-        if ft == 'wavy':      return _j_wavy_staggered(Re, spec)
-        elif ft in ('louvered', 'louver'): return _j_louvered_staggered(Re, spec)
-        elif ft == 'slit':    return _j_slit_staggered(Re, spec)
-        else:                 return _j_plain_staggered(Re, spec)
+        if ft == 'wavy':      return _j_wavy_staggered(Re, spec, geo)
+        elif ft in ('louvered', 'louver'): return _j_louvered_staggered(Re, spec, geo)
+        elif ft == 'slit':    return _j_slit_staggered(Re, spec, geo)
+        else:                 return _j_plain_staggered(Re, spec, geo)
 
 
-def _j_ft_staggered_direct(Re, spec, ft):
-    """
-    직접 상관식 모드 — 핀별 독립 상관식
-
-    [구현 상태]
-    Plain:    Wang (2000) IJHMT 43(15) — ✅ 구현 (기존 _j_plain_staggered)
-    Wavy:     Wang (2002) IJR 25:673 — ⬜ 미구현 (61 코일, 편차 6.98%)
-    Slit:     Wang (2001) IJHMT 44:3565 Eq.(1) — ⬜ 미구현 (56 코일, 편차 7.26%)
-    Louvered: Wang (1999) IJHMT 42(1):1 — ⬜ 미구현 (49 코일, 편차 8.1%)
-
-    미구현 핀은 etype 모드로 자동 fallback.
-    향후 논문에서 상관식 계수를 입수하면 여기에 구현.
-    """
+def _j_ft_staggered_direct(Re, spec, ft, geo=None):
+    """직접 상관식 모드 — 핀별 독립 상관식"""
     import warnings
 
     if ft == 'plain':
-        return _j_plain_staggered(Re, spec)
-
+        return _j_plain_staggered(Re, spec, geo)
     elif ft == 'wavy':
-        # TODO: Wang (2002) IJR 25:673 직접 상관식
-        # j = C × Re^n × (Fp/Dc)^a × (Xf/Dc)^b × (tanα)^c × Nr^d
-        # 61개 코일, 570 data points, 편차 6.98%
-        # 계수 입수 시 여기에 구현
-        warnings.warn("Wavy direct 상관식 미구현 → etype fallback", stacklevel=3)
-        return _j_wavy_staggered(Re, spec)
-
+        warnings.warn("Wavy direct 미구현 → etype fallback", stacklevel=3)
+        return _j_wavy_staggered(Re, spec, geo)
     elif ft in ('louvered', 'louver'):
-        # TODO: Wang (1999) IJHMT 42(1):1 직접 상관식
-        # 49개 코일, 편차 8.1%
-        warnings.warn("Louvered direct 상관식 미구현 → etype fallback", stacklevel=3)
-        return _j_louvered_staggered(Re, spec)
-
+        warnings.warn("Louvered direct 미구현 → etype fallback", stacklevel=3)
+        return _j_louvered_staggered(Re, spec, geo)
     elif ft == 'slit':
-        # TODO: Wang (2001) IJHMT 44:3565 Eq.(1)
-        # j = 0.3749 × Re^P1 × (Fp/Dc)^P2 × ...
-        # 56개 코일, 편차 7.26%
-        warnings.warn("Slit direct 상관식 미구현 → etype fallback", stacklevel=3)
-        return _j_slit_staggered(Re, spec)
-
+        warnings.warn("Slit direct 미구현 → etype fallback", stacklevel=3)
+        return _j_slit_staggered(Re, spec, geo)
     else:
-        return _j_plain_staggered(Re, spec)
+        return _j_plain_staggered(Re, spec, geo)
 
 
 def _j_ft_inline(Re, spec):
@@ -536,15 +535,16 @@ def _j_ft_inline(Re, spec):
 
 
 def air_htc_ft(spec: FinTubeSpec, geo: dict, V_face: float) -> float:
-    """FT 공기측 HTC — fin_type × tube_layout × corr_mode 자동 분기"""
+    """FT 공기측 HTC — Wang(2000) 정석, Dc 기반 Re"""
     rho_air=1.18; mu_air=1.85e-5; cp_air=1006; Pr_air=0.71
     G   = rho_air * V_face / geo['sigma']
-    Re  = G * spec.tube_do / mu_air
+    Dc  = geo.get('Dc', spec.tube_do + 2*spec.fin_thickness)
+    Re  = G * Dc / mu_air
     layout = getattr(spec, 'tube_layout', 'staggered').lower()
     if layout in ('inline', 'parallel'):
         j = _j_ft_inline(Re, spec)
     else:
-        j = _j_ft_staggered(Re, spec)
+        j = _j_ft_staggered(Re, spec, geo)
     return j * G * cp_air / Pr_air**(2/3)
 
 

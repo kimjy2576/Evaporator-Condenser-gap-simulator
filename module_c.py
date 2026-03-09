@@ -93,76 +93,36 @@ class InletCondition:
 
 def f_factor_ft_staggered(spec, geo: dict, V_face: float, N_r: int = None) -> dict:
     """
-    Fin-Tube Staggered 배열 공기측 마찰계수
-    — Wang, Chi & Chang (2000) IJHMT 43(15):2693-2700, Part II
-
-    [상관식]
-    f = 0.0267 × Re_Dc^P1 × (Fp/Dc)^P2 × (Fp/Dh)^P3
-        × (Fp/Pt)^P4 × (Pl/Pt)^P5 × Nr^P6
-
-    Re_Dc < 1000:
-      P1 = -0.764 + 0.739×(Pt/Pl) + 0.177×(Fp/Dc) - 0.00758/Nr
-      P2 = -15.689 + 64.021/ln(Re)
-      P3 = 1.696 - 15.695/ln(Re)
-
-    Re_Dc ≥ 1000:
-      P1 = -0.764 + 0.739×(Pt/Pl) + 0.177×(Fp/Dc) - 0.00758/Nr
-      P2 = -1.187 + 2.627/ln(Re)                    — (고Re 안정화)
-      P3 = -0.236 + 0.126×ln(Re)
-
-    [간략화 형태 — Nr ≥ 2, 중간 Re 범위 최적]
-      f = 0.361 × Re^F1 × (Pt/Dc)^F2 × (Fp/Dc)^F3 × Nr^F4
-      F1 = -0.247 + 0.040×Nr/ln(Re)
-      F2 = -0.169 + 0.900×ln(Re/Nr)/ln(Re)
-      F3 = -0.144 + 0.0273×Nr
-      F4 = -0.059 + 0.0118/ln(Re)
-
+    Fin-Tube Staggered f-factor — Wang(2000) 원논문 Table 6 정확 구현
+    f = 0.0267 × Re_Dc^f1 × (Pt/Pl)^f2 × (Fp/Dc)^f3
     유효 범위: 300 ≤ Re_Dc ≤ 20,000
-    검증 데이터: 74개 샘플 (staggered), 평균 편차 7.3%
-
-    Parameters
-    ----------
-    spec : FinTubeSpec
-        열교환기 형상 스펙 (tube_layout = 'staggered')
-    geo : dict
-        기하 계산 결과
-    V_face : float
-        면속도 [m/s]
-    N_r : int, optional
-        튜브 열 수 (None이면 spec.tube_rows 사용)
-
-    Returns
-    -------
-    dict : f, Re_Dc, G, layout='staggered'
     """
     if N_r is None:
         N_r = spec.tube_rows
 
     G    = RHO_AIR * V_face / geo['sigma']
-    Dc   = spec.tube_do
+    Dc   = geo.get('Dc', spec.tube_do + 2*spec.fin_thickness)
     Re   = np.clip(G * Dc / MU_AIR, 300.0, 20000.0)
     Fp   = spec.fin_pitch
     Pt   = spec.tube_pitch_t
     Pl   = spec.tube_pitch_l
     ln_Re = np.log(Re + 1e-9)
 
-    if N_r < 2:
-        F1 = -0.316
-        F2 = -0.152
-        F3 = 0.235
-        F4 = -0.060
-        f = 0.228 * Re**F1 * (Pt / Pl)**F2 * (Fp / Dc)**F3 * max(N_r, 1)**F4
-    else:
-        F1 = -0.247 + 0.040 * N_r / ln_Re
-        F2 = -0.169 + 0.900 * np.log(Re / N_r) / ln_Re
-        F3 = -0.144 + 0.0273 * N_r
-        F4 = -0.059 + 0.0118 / ln_Re
-        f = 0.361 * Re**F1 * (Pt / Dc)**F2 * (Fp / Dc)**F3 * N_r**F4
+    f1 = -0.764 + 0.739*(Pt/Pl) + 0.177*(Fp/Dc) - 0.00758/max(N_r, 1)
 
-    f = np.clip(f, 0.008, 0.25)
+    if Re < 1000:
+        f2 = -15.689 + 64.021/ln_Re
+        f3 = 1.696 - 15.695/ln_Re
+    else:
+        f2 = -1.187 + 2.627/ln_Re
+        f3 = -0.236 + 0.126*ln_Re
+
+    f = 0.0267 * Re**f1 * (Pt/Pl)**f2 * (Fp/Dc)**f3
+    f = np.clip(f, 0.005, 0.15)
 
     return dict(f=f, Re_Dc=Re, G=G, layout='staggered',
-                F1=F1, F2=F2, F3=F3, F4=F4)
+                f1=f1, f2=f2, f3=f3)
+
 
 
 # ─── FT Inline ───────────────────────────────────────────────────
@@ -304,76 +264,36 @@ def _f_fin_type_enhancement(spec, Re):
 
 def f_factor_ft_staggered(spec, geo: dict, V_face: float, N_r: int = None) -> dict:
     """
-    Fin-Tube Staggered 배열 공기측 마찰계수
-    — Wang, Chi & Chang (2000) IJHMT 43(15):2693-2700, Part II
-
-    [상관식]
-    f = 0.0267 × Re_Dc^P1 × (Fp/Dc)^P2 × (Fp/Dh)^P3
-        × (Fp/Pt)^P4 × (Pl/Pt)^P5 × Nr^P6
-
-    Re_Dc < 1000:
-      P1 = -0.764 + 0.739×(Pt/Pl) + 0.177×(Fp/Dc) - 0.00758/Nr
-      P2 = -15.689 + 64.021/ln(Re)
-      P3 = 1.696 - 15.695/ln(Re)
-
-    Re_Dc ≥ 1000:
-      P1 = -0.764 + 0.739×(Pt/Pl) + 0.177×(Fp/Dc) - 0.00758/Nr
-      P2 = -1.187 + 2.627/ln(Re)                    — (고Re 안정화)
-      P3 = -0.236 + 0.126×ln(Re)
-
-    [간략화 형태 — Nr ≥ 2, 중간 Re 범위 최적]
-      f = 0.361 × Re^F1 × (Pt/Dc)^F2 × (Fp/Dc)^F3 × Nr^F4
-      F1 = -0.247 + 0.040×Nr/ln(Re)
-      F2 = -0.169 + 0.900×ln(Re/Nr)/ln(Re)
-      F3 = -0.144 + 0.0273×Nr
-      F4 = -0.059 + 0.0118/ln(Re)
-
+    Fin-Tube Staggered f-factor — Wang(2000) 원논문 Table 6 정확 구현
+    f = 0.0267 × Re_Dc^f1 × (Pt/Pl)^f2 × (Fp/Dc)^f3
     유효 범위: 300 ≤ Re_Dc ≤ 20,000
-    검증 데이터: 74개 샘플 (staggered), 평균 편차 7.3%
-
-    Parameters
-    ----------
-    spec : FinTubeSpec
-        열교환기 형상 스펙 (tube_layout = 'staggered')
-    geo : dict
-        기하 계산 결과
-    V_face : float
-        면속도 [m/s]
-    N_r : int, optional
-        튜브 열 수 (None이면 spec.tube_rows 사용)
-
-    Returns
-    -------
-    dict : f, Re_Dc, G, layout='staggered'
     """
     if N_r is None:
         N_r = spec.tube_rows
 
     G    = RHO_AIR * V_face / geo['sigma']
-    Dc   = spec.tube_do
+    Dc   = geo.get('Dc', spec.tube_do + 2*spec.fin_thickness)
     Re   = np.clip(G * Dc / MU_AIR, 300.0, 20000.0)
     Fp   = spec.fin_pitch
     Pt   = spec.tube_pitch_t
     Pl   = spec.tube_pitch_l
     ln_Re = np.log(Re + 1e-9)
 
-    if N_r < 2:
-        F1 = -0.316
-        F2 = -0.152
-        F3 = 0.235
-        F4 = -0.060
-        f = 0.228 * Re**F1 * (Pt / Pl)**F2 * (Fp / Dc)**F3 * max(N_r, 1)**F4
-    else:
-        F1 = -0.247 + 0.040 * N_r / ln_Re
-        F2 = -0.169 + 0.900 * np.log(Re / N_r) / ln_Re
-        F3 = -0.144 + 0.0273 * N_r
-        F4 = -0.059 + 0.0118 / ln_Re
-        f = 0.361 * Re**F1 * (Pt / Dc)**F2 * (Fp / Dc)**F3 * N_r**F4
+    f1 = -0.764 + 0.739*(Pt/Pl) + 0.177*(Fp/Dc) - 0.00758/max(N_r, 1)
 
-    f = np.clip(f, 0.008, 0.25)
+    if Re < 1000:
+        f2 = -15.689 + 64.021/ln_Re
+        f3 = 1.696 - 15.695/ln_Re
+    else:
+        f2 = -1.187 + 2.627/ln_Re
+        f3 = -0.236 + 0.126*ln_Re
+
+    f = 0.0267 * Re**f1 * (Pt/Pl)**f2 * (Fp/Dc)**f3
+    f = np.clip(f, 0.005, 0.15)
 
     return dict(f=f, Re_Dc=Re, G=G, layout='staggered',
-                F1=F1, F2=F2, F3=F3, F4=F4)
+                f1=f1, f2=f2, f3=f3)
+
 
 
 # ─── FT Inline ───────────────────────────────────────────────────
