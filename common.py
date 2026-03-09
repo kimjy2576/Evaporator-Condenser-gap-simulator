@@ -507,6 +507,166 @@ def _j_ft_inline(Re, spec):
     else:         return j_stag * 0.75
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  상관식 자동 선택 엔진
+# ═══════════════════════════════════════════════════════════════════
+
+def select_correlations(spec, geo, ref=None, side='evap'):
+    """기하·운전조건 기반 상관식 자동 선택
+
+    입력 스펙만으로 최적 상관식 세트를 결정.
+    사용자가 직접 선택할 필요 없이 자동으로 매핑됨.
+
+    Parameters
+    ----------
+    spec : FinTubeSpec or MCHXSpec
+    geo  : geometry dict (compute_ft_geometry 결과)
+    ref  : RefrigerantState (optional, 냉매측 선택용)
+    side : 'evap' or 'cond'
+
+    Returns
+    -------
+    dict with keys:
+        air_j      : str  — j-factor 상관식 ID
+        air_j_ref  : str  — 출처 논문
+        air_f      : str  — f-factor 상관식 ID
+        air_f_ref  : str  — 출처 논문
+        ref_htc    : str  — 냉매 HTC 상관식 ID
+        ref_htc_ref: str  — 출처 논문
+        eta_fin    : str  — 핀효율 방법
+        warnings   : list — 범위 밖 경고
+    """
+    warnings = []
+    hx_type = getattr(spec, 'hx_type', 'FT')
+
+    # ── 공기측 j-factor ──
+    if hx_type == 'MCHX':
+        air_j = 'chang_wang_1997'
+        air_j_ref = 'Chang & Wang (1997) IJHMT 40(3):533'
+        air_f = 'chang_wang_1997_f'
+        air_f_ref = 'Chang & Wang (1997)'
+        eta_fin = 'straight_fin'
+
+    else:  # FT
+        layout = getattr(spec, 'tube_layout', 'staggered').lower()
+        fin = getattr(spec, 'fin_type', 'plain').lower()
+        Dc = geo.get('Dc', spec.tube_do + 2*spec.fin_thickness)
+        Pt = spec.tube_pitch_t
+        Pl = spec.tube_pitch_l
+        Nr = spec.tube_rows
+        Fp = spec.fin_pitch
+        eta_fin = 'schmidt_circular'
+
+        # ── j-factor 선택 ──
+        if layout in ('inline', 'parallel'):
+            air_j = 'wang_2000_inline'
+            air_j_ref = 'Wang (2000) IJHMT 43(15):2693 [inline]'
+        elif fin == 'plain':
+            if Pt/Pl <= 1.35:
+                air_j = 'wang_2000_plain'
+                air_j_ref = 'Wang, Chi & Chang (2000) IJHMT 43(15):2693'
+            else:
+                air_j = 'wang_2000_plain'  # KYW j는 미구현 → Wang fallback
+                air_j_ref = 'Wang (2000) [Pt/Pl>1.35, KYW j fallback]'
+                warnings.append(f'j: Pt/Pl={Pt/Pl:.2f}>1.35 — Wang(2000) 외삽 주의')
+        elif fin == 'wavy':
+            air_j = 'wang_1999_wavy'
+            air_j_ref = 'Wang et al. (1999) IJHMT 42:1945'
+        elif fin in ('louvered', 'louver'):
+            air_j = 'wang_1999_louver'
+            air_j_ref = 'Wang, Lee & Chang (1999) IJHMT 42(1):1'
+        elif fin == 'slit':
+            if Dc*1e3 >= 10.0 and Nr <= 4:
+                air_j = 'wang_2001_slit_direct'
+                air_j_ref = 'Wang et al. (2001) IJHMT 44:3565 [Direct]'
+            else:
+                air_j = 'plain_x_E_slit'
+                air_j_ref = 'Plain × E_slit enhancement'
+                if Dc*1e3 < 10.0:
+                    warnings.append(f'j slit: Dc={Dc*1e3:.1f}mm<10mm — E-type 사용')
+        else:
+            air_j = 'wang_2000_plain'
+            air_j_ref = 'Wang (2000) [unknown fin → plain fallback]'
+            warnings.append(f'j: 알 수 없는 핀 타입 "{fin}" → plain fallback')
+
+        # ── f-factor 선택 ──
+        if layout in ('inline', 'parallel'):
+            air_f = 'wang_2000_inline_f'
+            air_f_ref = 'Wang (2000) IJHMT 43(15):2693 [inline]'
+        elif Pt/Pl <= 1.35:
+            air_f = 'wang_2000_f'
+            air_f_ref = 'Wang (2000) IJHMT 43(15):2693 Table 6'
+        else:
+            air_f = 'kyw_1999_f'
+            air_f_ref = 'Kim, Youn & Webb (1999) ASME JHT 121(3):662'
+
+        # Enhanced fin f 보정
+        if fin != 'plain' and layout not in ('inline', 'parallel'):
+            air_f += f' + E_fin({fin})'
+            air_f_ref += f' × E_{fin}(Nr={Nr})'
+
+        # ── Re 범위 체크 ──
+        rho_air = 1.18; mu_air = 1.85e-5
+        # 대표 V_face로 Re 추정 (3 m/s)
+        G_est = rho_air * 3.0 / max(geo.get('sigma', 0.5), 0.1)
+        Re_est = G_est * Dc / mu_air
+        if Re_est > 15000:
+            warnings.append(f'Re_Dc≈{Re_est:.0f} — Wang(2000) 유효범위(300~20000) 상한 근접')
+        if Re_est < 300:
+            warnings.append(f'Re_Dc≈{Re_est:.0f} — Wang(2000) 유효범위(300~20000) 하한 미만')
+
+    # ── 냉매측 HTC ──
+    if side == 'evap':
+        # D_ch 기반 선택
+        D_ch = getattr(spec, 'tube_di', geo.get('Dh', 5e-3))
+        if D_ch >= 6e-3:
+            ref_htc = 'gungor_winterton_1986'
+            ref_htc_ref = 'Gungor & Winterton (1986) IJHMT 29:351'
+        elif D_ch >= 3e-3:
+            ref_htc = 'gungor_winterton_1986'
+            ref_htc_ref = 'Gungor & Winterton (1986) [small tube]'
+            warnings.append(f'h_i: D={D_ch*1e3:.1f}mm — G-W 소구경 외삽')
+        else:
+            ref_htc = 'gungor_winterton_1986'
+            ref_htc_ref = 'Gungor & Winterton (1986) [micro, caution]'
+            warnings.append(f'h_i: D={D_ch*1e3:.1f}mm<3mm — 미니채널 전용 상관식 권장')
+
+        # 단상 (과열/과냉)은 항상 Gnielinski — 별도 표시 불필요
+    else:  # cond
+        ref_htc = 'shah_1979'
+        ref_htc_ref = 'Shah (1979) IJHMT 22:547'
+
+    return dict(
+        air_j=air_j, air_j_ref=air_j_ref,
+        air_f=air_f, air_f_ref=air_f_ref,
+        ref_htc=ref_htc, ref_htc_ref=ref_htc_ref,
+        eta_fin=eta_fin,
+        single_phase='gnielinski_1976',
+        single_phase_ref='Gnielinski (1976) [superheated/subcooled]',
+        transition='linear_blend_0.90_1.05',
+        warnings=warnings,
+        hx_type=hx_type,
+        side=side,
+    )
+
+
+def print_correlation_summary(corr_dict):
+    """선택된 상관식 요약 출력"""
+    print("┌─────────────────────────────────────────────────────────┐")
+    print("│            선택된 상관식 (자동)                            │")
+    print("├─────────────────────────────────────────────────────────┤")
+    print(f"│ 공기 j : {corr_dict['air_j_ref'][:50]:<50s}│")
+    print(f"│ 공기 f : {corr_dict['air_f_ref'][:50]:<50s}│")
+    print(f"│ 냉매   : {corr_dict['ref_htc_ref'][:50]:<50s}│")
+    print(f"│ 단상   : {corr_dict['single_phase_ref'][:50]:<50s}│")
+    print(f"│ 핀효율 : {corr_dict['eta_fin']:<50s}│")
+    if corr_dict['warnings']:
+        print("├─────────────────────────────────────────────────────────┤")
+        for w in corr_dict['warnings']:
+            print(f"│ ⚠ {w[:55]:<55s}│")
+    print("└─────────────────────────────────────────────────────────┘")
+
+
 def air_htc_ft(spec: FinTubeSpec, geo: dict, V_face: float) -> float:
     """FT 공기측 HTC — Wang(2000) 정석, Dc 기반 Re"""
     rho_air=1.18; mu_air=1.85e-5; cp_air=1006; Pr_air=0.71
@@ -1436,9 +1596,14 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
 
 def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
                     m_ref, x_in, side='evap', N_seg=10, flow='counter',
-                    evap_corr='gungor_winterton'):
+                    evap_corr='auto'):
     """Level 2 Tube-Segment coil model. flow='counter' or 'parallel'.
-    evap_corr='shah' or 'gungor_winterton' (default)."""
+    evap_corr='auto' (자동 선택), 'shah', or 'gungor_winterton'."""
+
+    # ── 상관식 자동 선택 ──
+    corr = select_correlations(spec, geo, ref, side)
+    if evap_corr == 'auto':
+        evap_corr = 'gungor_winterton' if 'gungor' in corr['ref_htc'] else 'shah'
     Nr = getattr(spec, 'tube_rows', getattr(spec, 'n_slabs', 1))
     Nt = getattr(spec, 'tube_cols', 1)
     Nr = max(Nr, 1); Nt = max(Nt, 1)
@@ -1680,6 +1845,7 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
         m_dot=m_air_in, m_ref=m_ref, flow=flow,
         tubes=tube_results, Nr=Nr, Nt=Nt, N_seg=N_seg,
         N_total_seg=len(all_segs), Q_per_row=Q_per_row,
+        correlations=corr,
         phase_summary=dict(two_phase=phases.count('two_phase'),
             superheated=phases.count('superheated'),
             subcooled=phases.count('subcooled'),
