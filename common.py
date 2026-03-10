@@ -1853,7 +1853,8 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
                     T_n = T_sat - Q*(1-frac)/(m_ref*cp_l+1e-9)
                     x_n = -(T_sat-T_n)*cp_l/h_fg
                 else: T_n = T_sat
-        elif phase == 'superheated':
+        elif phase in ('superheated', 'transition') and x_ref > 1.0:
+            # transition(x>1) 또는 superheated → 과열 증기로 처리
             dTr = Q/(m_ref*cp_v+1e-9)
             T_n = T_ref+dTr if side=='evap' else T_ref-dTr
             x_n = 1.0+(T_n-T_sat)*cp_v/h_fg
