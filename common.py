@@ -1838,7 +1838,7 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
 
         T_wall = (T_ref_base + T_air) / 2
         Q_prev = m_air * cp_air * max(abs(T_air - T_ref_base), 0.1) * 0.2
-        alpha = 0.3
+        alpha = 0.7  # 완화 계수 (0.7: 8회 내 수렴)
         h_i = 1000.0; phase = 'two_phase'
         T_o_conv = T_air; W_o_conv = W_air; is_wet_conv = False
 
