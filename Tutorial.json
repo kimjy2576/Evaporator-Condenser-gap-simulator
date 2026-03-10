@@ -16,7 +16,7 @@
   "sim": {
     "gap_min": 5,
     "gap_max": 100,
-    "gap_points": 25
+    "gap_points": 20
   },
   "evap": {
     "hx_type": "FT",
