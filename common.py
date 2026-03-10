@@ -617,7 +617,6 @@ def select_correlations(spec, geo, ref=None, side='evap'):
 
     # ── 냉매측 HTC ──
     if side == 'evap':
-        # D_ch 기반 선택
         D_ch = getattr(spec, 'tube_di', geo.get('Dh', 5e-3))
         if D_ch >= 6e-3:
             ref_htc = 'gungor_winterton_1986'
@@ -627,14 +626,16 @@ def select_correlations(spec, geo, ref=None, side='evap'):
             ref_htc_ref = 'Gungor & Winterton (1986) [small tube]'
             warnings.append(f'h_i: D={D_ch*1e3:.1f}mm — G-W 소구경 외삽')
         else:
-            ref_htc = 'gungor_winterton_1986'
-            ref_htc_ref = 'Gungor & Winterton (1986) [micro, caution]'
-            warnings.append(f'h_i: D={D_ch*1e3:.1f}mm<3mm — 미니채널 전용 상관식 권장')
-
-        # 단상 (과열/과냉)은 항상 Gnielinski — 별도 표시 불필요
+            ref_htc = 'kim_mudawar_2013'
+            ref_htc_ref = 'Kim & Mudawar (2013) IJHMT 58:718 [mini-channel]'
     else:  # cond
-        ref_htc = 'shah_1979'
-        ref_htc_ref = 'Shah (1979) IJHMT 22:547'
+        D_ch = getattr(spec, 'tube_di', geo.get('Dh', 5e-3))
+        if D_ch < 3e-3:
+            ref_htc = 'kim_mudawar_2012'
+            ref_htc_ref = 'Kim & Mudawar (2012) IJHMT 55:3246 [mini-channel cond]'
+        else:
+            ref_htc = 'shah_1979'
+            ref_htc_ref = 'Shah (1979) IJHMT 22:547'
 
     return dict(
         air_j=air_j, air_j_ref=air_j_ref,
@@ -750,6 +751,102 @@ def gnielinski_htc(Re, Pr, k, D):
     return Nu * k / D
 
 
+# ─── 미니채널 HTC: Kim & Mudawar (2013) ─────────────────────────
+
+def kim_mudawar_evap(D_h, G, x, q_flux, ref, T_sat_K, P_H_ratio=1.0):
+    """Kim & Mudawar (2013) 미니채널 증발 HTC
+    출처: IJHMT 58:718-734
+
+    h_tp = sqrt(h_nb² + h_cb²)
+    h_nb: 핵비등 기여 (Bo, P_r 의존)
+    h_cb: 대류비등 기여 (We, Xtt 의존)
+
+    Parameters
+    ----------
+    D_h     : 수력 직경 [m]
+    G       : 질량유속 [kg/m²s]
+    x       : 건도 (0~1)
+    q_flux  : 열유속 [W/m²]
+    ref     : RefrigerantState
+    T_sat_K : 포화온도 [K]
+    P_H_ratio: P_heated/P_wetted (직사각형 채널: 3면 가열 시 ~0.75)
+    """
+    rf = ref.refrigerant
+    x = np.clip(x, 0.01, 0.99)
+
+    mu_l = CP.PropsSI('V','T',T_sat_K,'Q',0,rf)
+    k_l  = CP.PropsSI('L','T',T_sat_K,'Q',0,rf)
+    Pr_l = CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
+    rho_l = CP.PropsSI('D','T',T_sat_K,'Q',0,rf)
+    rho_v = CP.PropsSI('D','T',T_sat_K,'Q',1,rf)
+    mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
+    sigma = CP.PropsSI('I','T',T_sat_K,'Q',0,rf)
+    h_fg = CP.PropsSI('H','T',T_sat_K,'Q',1,rf) - CP.PropsSI('H','T',T_sat_K,'Q',0,rf)
+    P_sat = CP.PropsSI('P','T',T_sat_K,'Q',0,rf)
+    P_crit = CP.PropsSI('Pcrit',rf)
+    P_r = P_sat / P_crit
+
+    # 단상 액체 기준 HTC
+    Re_f = max(G * (1-x) * D_h / mu_l, 100)
+    h_f = 0.023 * max(Re_f, 2300)**0.8 * Pr_l**0.4 * k_l / D_h
+
+    # Boiling number
+    Bo = max(q_flux, 100) / (G * h_fg + 1e-9)
+
+    # Weber number (전체 유량 액체 기준)
+    We_fo = G**2 * D_h / (rho_l * sigma + 1e-9)
+
+    # Martinelli parameter
+    Xtt = ((1-x)/x)**0.9 * (rho_v/rho_l)**0.5 * (mu_l/mu_v)**0.1
+
+    # Nucleate boiling contribution
+    h_nb = 2345 * (Bo * P_H_ratio)**0.7 * P_r**0.38 * (1-x)**(-0.51) * h_f
+
+    # Convective boiling contribution
+    h_cb = (5.2 * (Bo * P_H_ratio)**0.08 * We_fo**(-0.54) + \
+            3.5 * (1/max(Xtt, 0.001))**0.94 * (rho_v/rho_l)**0.25) * h_f
+
+    # Combined
+    h_tp = np.sqrt(h_nb**2 + h_cb**2)
+    return max(h_tp, h_f)
+
+
+def kim_mudawar_cond(D_h, G, x, ref, T_sat_K):
+    """Kim & Mudawar (2012) 미니채널 응축 HTC
+    출처: IJHMT 55:3246-3261
+
+    Annular regime (We* > 7Xtt^0.2) vs Slug/Bubbly regime
+    """
+    rf = ref.refrigerant
+    x = np.clip(x, 0.01, 0.99)
+
+    mu_l = CP.PropsSI('V','T',T_sat_K,'Q',0,rf)
+    k_l  = CP.PropsSI('L','T',T_sat_K,'Q',0,rf)
+    Pr_l = CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
+    rho_l = CP.PropsSI('D','T',T_sat_K,'Q',0,rf)
+    rho_v = CP.PropsSI('D','T',T_sat_K,'Q',1,rf)
+    mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
+    sigma = CP.PropsSI('I','T',T_sat_K,'Q',0,rf)
+
+    Re_f = max(G * (1-x) * D_h / mu_l, 100)
+    h_f = 0.023 * max(Re_f, 2300)**0.8 * Pr_l**0.4 * k_l / D_h
+
+    Xtt = ((1-x)/x)**0.9 * (rho_v/rho_l)**0.5 * (mu_l/mu_v)**0.1
+    We_star = G**2 * D_h * x**1.6 / (rho_v * sigma * (1-x)**0.4 + 1e-9)
+
+    # Regime check
+    if We_star > 7 * max(Xtt, 0.001)**0.2:
+        # Annular regime
+        h_tp = 0.048 * Re_f**0.69 * Pr_l**0.34 * \
+               (1/max(Xtt, 0.001))**0.5 * k_l / D_h
+    else:
+        # Slug/Bubbly regime
+        h_tp = (0.048 * Re_f**0.69 * Pr_l**0.34 * \
+                (1/max(Xtt, 0.001))**0.5 * k_l / D_h) * 0.7  # 감쇠
+
+    return max(h_tp, h_f)
+
+
 def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None,
                          evap_corr='gungor_winterton'):
     """건도(x) 기반 냉매 HTC 자동 분기
@@ -765,12 +862,17 @@ def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None,
                          x>0.8에서 안정적, 수평 소구경 보정 포함
     """
     rf = ref.refrigerant
+    is_mchx = getattr(spec, 'hx_type', 'FT') == 'MCHX'
+
     if hasattr(spec, 'tube_di'):
         D = spec.tube_di
         A_cs_one = np.pi * D**2 / 4
     else:
         D = geo.get('Dh', 2e-3)
-        A_cs_one = spec.ch_width * spec.ch_height * getattr(spec, 'n_ports', 10)
+        # MCHX: 단일 포트 단면적 × N_ports (병렬)
+        N_ports = getattr(spec, 'n_ports', 10)
+        A_ch_one = spec.ch_width * spec.ch_height
+        A_cs_one = A_ch_one * N_ports
 
     G_ref = max(m_ref / A_cs_one, 50.0)
 
@@ -780,6 +882,10 @@ def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None,
     else:
         T_sat_K = ref.T_sat_cond + 273.15
         P_sat = ref.P_cond; h_fg = ref.h_cond_v - ref.h_cond_l
+
+    # ── MCHX 미니채널 (D < 3mm) → Kim & Mudawar 자동 선택 ──
+    if is_mchx and D < 3e-3:
+        evap_corr = 'kim_mudawar'
 
     # ── 과냉 (x < -0.05) ──
     if x < -0.05:
@@ -798,92 +904,88 @@ def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None,
     # ── 이상 영역 (0 ≤ x ≤ 1) ──
     x_clip = np.clip(x, 0.05, 0.95)
 
-    # 공통 물성
-    mu_l = ref.mu_l_evap if side == 'evap' else CP.PropsSI('V','T',T_sat_K,'Q',0,rf)
-    k_l  = ref.k_l_evap  if side == 'evap' else CP.PropsSI('L','T',T_sat_K,'Q',0,rf)
-    Pr_l = ref.Pr_l_evap if side == 'evap' else CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
-    rho_l = ref.rho_l_evap if side == 'evap' else CP.PropsSI('D','T',T_sat_K,'Q',0,rf)
-    rho_v = ref.rho_v_evap if side == 'evap' else CP.PropsSI('D','T',T_sat_K,'Q',1,rf)
-    mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
-
-    # h_lo, h_l (공통)
-    Re_lo = G_ref * D / mu_l
-    h_lo = 0.023 * max(Re_lo, 2300)**0.8 * Pr_l**0.4 * k_l / D
-    Re_l = max(G_ref * (1 - x_clip) * D / mu_l, 100)
-    h_l  = 0.023 * max(Re_l, 2300)**0.8 * Pr_l**0.4 * k_l / D
-
     # Bo (세그먼트 열유속 기반)
-    Nr = max(getattr(spec, 'tube_rows', 2), 1)
+    Nr = max(getattr(spec, 'tube_rows', getattr(spec, 'n_slabs', 1)), 1)
     Nt = max(getattr(spec, 'tube_cols', 1), 1)
     A_i_seg = geo['A_i'] / (Nr * Nt * 10)
     q_flux = max((Q_seg or 15.0) / (A_i_seg + 1e-9), 100.0)
-    Bo = q_flux / (G_ref * h_fg)
 
-    # Froude (수평 튜브)
-    Fr_l = G_ref**2 / (rho_l**2 * 9.81 * D)
+    if side == 'evap' and evap_corr == 'kim_mudawar':
+        # ── Kim & Mudawar (2013) 미니채널 증발 ──
+        # P_H/P_F: 직사각형 채널 3면 가열 비율
+        if is_mchx:
+            cw = spec.ch_width; ch = spec.ch_height
+            P_H_ratio = (2*ch + cw) / (2*(ch + cw))  # 3면 가열
+        else:
+            P_H_ratio = 1.0
+        h_2ph = kim_mudawar_evap(D, G_ref, x_clip, q_flux, ref, T_sat_K, P_H_ratio)
+    elif side == 'cond' and is_mchx and D < 3e-3:
+        # ── Kim & Mudawar (2012) 미니채널 응축 ──
+        h_2ph = kim_mudawar_cond(D, G_ref, x_clip, ref, T_sat_K)
+    else:
+        # ── FT 상관식 (Shah / Gungor-Winterton) ──
+        mu_l = ref.mu_l_evap if side == 'evap' else CP.PropsSI('V','T',T_sat_K,'Q',0,rf)
+        k_l  = ref.k_l_evap  if side == 'evap' else CP.PropsSI('L','T',T_sat_K,'Q',0,rf)
+        Pr_l = ref.Pr_l_evap if side == 'evap' else CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
+        rho_l = ref.rho_l_evap if side == 'evap' else CP.PropsSI('D','T',T_sat_K,'Q',0,rf)
+        rho_v = ref.rho_v_evap if side == 'evap' else CP.PropsSI('D','T',T_sat_K,'Q',1,rf)
+        mu_v_loc = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
+        Re_lo = G_ref * D / mu_l
+        h_lo = 0.023 * max(Re_lo, 2300)**0.8 * Pr_l**0.4 * k_l / D
+        Re_l = max(G_ref * (1 - x_clip) * D / mu_l, 100)
+        h_l  = 0.023 * max(Re_l, 2300)**0.8 * Pr_l**0.4 * k_l / D
+        Bo = q_flux / (G_ref * h_fg)
+        Fr_l = G_ref**2 / (rho_l**2 * 9.81 * D)
 
-    if side == 'evap':
-        if evap_corr == 'shah':
-            # ── Shah (1982) Chart Correlation ──
-            Co = ((1-x_clip)/x_clip)**0.8 * (rho_v/rho_l)**0.5
-            N = Co if Fr_l >= 0.04 else Co * 0.38 * Fr_l**(-0.3)
-            psi_cb = 1.8 / max(N, 0.01)**0.8
-            if N > 1.0:
-                psi_nb = 230*Bo**0.5 if Bo > 0.3e-4 else 1+46*Bo**0.5
-                psi = max(psi_nb, psi_cb)
-            else:
-                if 0.1 < N <= 1.0:
-                    F_s = 14.7 if Bo >= 11e-4 else 15.43
-                    psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.1))
+        if side == 'evap':
+            if evap_corr == 'shah':
+                Co = ((1-x_clip)/x_clip)**0.8 * (rho_v/rho_l)**0.5
+                N = Co if Fr_l >= 0.04 else Co * 0.38 * Fr_l**(-0.3)
+                psi_cb = 1.8 / max(N, 0.01)**0.8
+                if N > 1.0:
+                    psi_nb = 230*Bo**0.5 if Bo > 0.3e-4 else 1+46*Bo**0.5
+                    psi = max(psi_nb, psi_cb)
                 else:
                     F_s = 14.7 if Bo >= 11e-4 else 15.43
-                    psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.15))
-                psi = max(psi_cb, psi_bs)
-            h_2ph = h_lo * psi
-
+                    if 0.1 < N <= 1.0:
+                        psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.1))
+                    else:
+                        psi_bs = F_s * Bo**0.5 * np.exp(2.74 * N**(-0.15))
+                    psi = max(psi_cb, psi_bs)
+                h_2ph = h_lo * psi
+            else:
+                # Gungor & Winterton (1986)
+                Xtt = ((1-x_clip)/x_clip)**0.9 * (rho_v/rho_l)**0.5 * (mu_l/mu_v_loc)**0.1
+                E = 1 + 24000 * Bo**1.16 + 1.37 * (1/max(Xtt, 0.001))**0.86
+                S = 1 / (1 + 1.15e-6 * E**2 * max(Re_l, 100)**1.17)
+                P_r = P_sat / CP.PropsSI('Pcrit', rf)
+                M = CP.PropsSI('M', rf) * 1000
+                h_pool = 55 * P_r**0.12 * max(-np.log10(P_r), 0.01)**(-0.55) \
+                         * M**(-0.5) * max(q_flux, 100)**0.67
+                if Fr_l < 0.05:
+                    E *= Fr_l**(0.1 - 2*Fr_l); S *= np.sqrt(Fr_l)
+                h_2ph = E * h_l + S * h_pool
         else:
-            # ── Gungor & Winterton (1986) ──
-            # h_tp = E × h_l + S × h_pool
-            # Ref: IJHMT 29(3):351-358
-
-            # Martinelli parameter
-            Xtt = ((1-x_clip)/x_clip)**0.9 * (rho_v/rho_l)**0.5 * (mu_l/mu_v)**0.1
-
-            # Enhancement factor E
-            E = 1 + 24000 * Bo**1.16 + 1.37 * (1/max(Xtt, 0.001))**0.86
-
-            # Suppression factor S
-            S = 1 / (1 + 1.15e-6 * E**2 * max(Re_l, 100)**1.17)
-
-            # Pool boiling — Cooper (1984)
-            P_r = P_sat / CP.PropsSI('Pcrit', rf)
-            M = CP.PropsSI('M', rf) * 1000  # kg/mol → g/mol
-            h_pool = 55 * P_r**0.12 * max(-np.log10(P_r), 0.01)**(-0.55) \
-                     * M**(-0.5) * max(q_flux, 100)**0.67
-
-            # 수평 튜브 보정 (Gungor-Winterton 1987 update)
-            if Fr_l < 0.05:
-                E *= Fr_l**(0.1 - 2*Fr_l)
-                S *= np.sqrt(Fr_l)
-
-            h_2ph = E * h_l + S * h_pool
-
-    else:
-        # ── Shah (1979) 응축 ──
-        Z = (1/x_clip - 1)**0.8 * (P_sat / CP.PropsSI('Pcrit', rf))**0.4
-        h_2ph = h_lo * (1 + 3.8 / max(Z, 0.01)**0.95)
+            # Shah (1979) 응축
+            Z = (1/x_clip - 1)**0.8 * (P_sat / CP.PropsSI('Pcrit', rf))**0.4
+            h_2ph = h_lo * (1 + 3.8 / max(Z, 0.01)**0.95)
 
     # ── 전이 블렌딩 (x = 0.90~1.05) ──
     if 0.90 < x <= 1.05:
+        mu_v_t = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
         k_v  = CP.PropsSI('L','T',T_sat_K,'Q',1,rf)
         Pr_v = CP.PropsSI('Prandtl','T',T_sat_K,'Q',1,rf)
-        h_vapor = gnielinski_htc(G_ref*D/mu_v, Pr_v, k_v, D)
+        h_vapor = gnielinski_htc(G_ref*D/mu_v_t, Pr_v, k_v, D)
         w = np.clip((x - 0.90) / 0.15, 0, 1)
         return (1 - w) * h_2ph + w * h_vapor, 'transition'
 
     # ── 과냉 전이 (-0.05 ~ 0) ──
     if -0.05 <= x < 0:
-        h_sub = gnielinski_htc(Re_lo, Pr_l, k_l, D)
+        mu_l_t = CP.PropsSI('V','T',T_sat_K,'Q',0,rf)
+        k_l_t  = CP.PropsSI('L','T',T_sat_K,'Q',0,rf)
+        Pr_l_t = CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
+        Re_lo_t = G_ref * D / mu_l_t
+        h_sub = gnielinski_htc(Re_lo_t, Pr_l_t, k_l_t, D)
         w = np.clip((x + 0.05) / 0.05, 0, 1)
         return (1 - w) * h_sub + w * h_2ph, 'transition'
 
@@ -1462,7 +1564,7 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
             b = np.clip(b, 1.0, B_MAX)  # ★ 상한 제한
 
             h_o_wet = h_o * b
-            A_fin_ratio = geo['A_fin'] / (geo['A_total'] + 1e-9)
+            A_fin_ratio = geo.get('A_fin', geo.get('A_louver', geo['A_total']*0.9)) / (geo['A_total'] + 1e-9)
             eta_o_wet = 1.0 - A_fin_ratio * (1 - eta_o)
             eta_o_wet = max(min(eta_o_wet, 1.0), 0.3)
             UA_o_wet = eta_o_wet * h_o_wet * A_o_row
@@ -1630,7 +1732,7 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
     A_o_seg = geo['A_total'] / (N_tubes * N_seg)
     A_i_seg = geo['A_i'] / (N_tubes * N_seg)
     R_wall_seg = geo['R_wall'] * N_tubes * N_seg
-    A_fin_ratio = geo['A_fin'] / (geo['A_total'] + 1e-9)
+    A_fin_ratio = geo.get('A_fin', geo.get('A_louver', geo['A_total']*0.9)) / (geo['A_total'] + 1e-9)
     if _CP:
         def get_W(T,RH): return HAPropsSI('W','T',T+273.15,'R',max(RH,0.01),'P',P_atm)
         def get_h(T,RH): return HAPropsSI('H','T',T+273.15,'R',max(RH,0.01),'P',P_atm)
