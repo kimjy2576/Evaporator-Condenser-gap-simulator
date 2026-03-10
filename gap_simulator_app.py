@@ -294,7 +294,7 @@ with st.sidebar:
             l2_flow_evap = st.selectbox("증발기 배열", ['counter', 'parallel'], key='l2_flow_evap')
         with col_fc:
             l2_flow_cond = st.selectbox("응축기 배열", ['counter', 'parallel'], key='l2_flow_cond')
-        l2_evap_corr = st.selectbox("증발 상관식", ['auto', 'gungor_winterton', 'shah'], key='l2_corr')
+        l2_evap_corr = st.selectbox("증발 상관식", ['auto', 'chen', 'gungor_winterton', 'shah'], key='l2_corr')
         l2_nseg = st.slider("세그먼트/튜브", 3, 10, 5, key='l2_nseg')
 
     st.divider()

@@ -618,13 +618,9 @@ def select_correlations(spec, geo, ref=None, side='evap'):
     # ── 냉매측 HTC ──
     if side == 'evap':
         D_ch = getattr(spec, 'tube_di', geo.get('Dh', 5e-3))
-        if D_ch >= 6e-3:
-            ref_htc = 'gungor_winterton_1986'
-            ref_htc_ref = 'Gungor & Winterton (1986) IJHMT 29:351'
-        elif D_ch >= 3e-3:
-            ref_htc = 'gungor_winterton_1986'
-            ref_htc_ref = 'Gungor & Winterton (1986) [small tube]'
-            warnings.append(f'h_i: D={D_ch*1e3:.1f}mm — G-W 소구경 외삽')
+        if D_ch >= 3e-3:
+            ref_htc = 'chen_1966'
+            ref_htc_ref = 'Chen (1966) J.Heat Transfer 88:189 [convective boiling]'
         else:
             ref_htc = 'kim_mudawar_2013'
             ref_htc_ref = 'Kim & Mudawar (2013) IJHMT 58:718 [mini-channel]'
@@ -847,8 +843,72 @@ def kim_mudawar_cond(D_h, G, x, ref, T_sat_K):
     return max(h_tp, h_f)
 
 
+# ─── 관내 비등 HTC: Chen (1966) ──────────────────────────────────
+
+def chen_evap(D, G, x, q_flux, ref, T_sat_K):
+    """Chen (1966) 관내 유동비등 HTC
+    출처: J. Heat Transfer 88(2):189-196
+
+    h_tp = F × h_l + S × h_nb
+    F = 대류 강화 인자 (Xtt 의존, q'' 무관)
+    S = 핵비등 억제 인자 (Re_tp 의존)
+    h_nb = Forster-Zuber 핵비등
+
+    대류비등 지배 조건 (소구경, 고 G)에서 S→0 → h_tp ≈ F×h_l
+    """
+    rf = ref.refrigerant
+    x = np.clip(x, 0.01, 0.99)
+
+    mu_l = CP.PropsSI('V','T',T_sat_K,'Q',0,rf)
+    k_l  = CP.PropsSI('L','T',T_sat_K,'Q',0,rf)
+    Pr_l = CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
+    cp_l = CP.PropsSI('C','T',T_sat_K,'Q',0,rf)
+    rho_l = CP.PropsSI('D','T',T_sat_K,'Q',0,rf)
+    rho_v = CP.PropsSI('D','T',T_sat_K,'Q',1,rf)
+    mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
+    sigma = CP.PropsSI('I','T',T_sat_K,'Q',0,rf)
+    h_fg = CP.PropsSI('H','T',T_sat_K,'Q',1,rf) - CP.PropsSI('H','T',T_sat_K,'Q',0,rf)
+    P_sat = CP.PropsSI('P','T',T_sat_K,'Q',0,rf)
+
+    # ── 단상 액체 HTC (Dittus-Boelter) ──
+    Re_l = max(G * (1 - x) * D / mu_l, 100)
+    h_l = 0.023 * max(Re_l, 2300)**0.8 * Pr_l**0.4 * k_l / D
+
+    # ── Martinelli parameter ──
+    Xtt = ((1-x)/x)**0.9 * (rho_v/rho_l)**0.5 * (mu_l/mu_v)**0.1
+    inv_Xtt = 1.0 / max(Xtt, 0.001)
+
+    # ── F factor (대류 강화) ──
+    # F = 1 for 1/Xtt ≤ 0.1, else 2.35×(0.213 + 1/Xtt)^0.736
+    if inv_Xtt <= 0.1:
+        F = 1.0
+    else:
+        F = 2.35 * (0.213 + inv_Xtt)**0.736
+
+    # ── S factor (핵비등 억제) ──
+    Re_tp = Re_l * F**1.25
+    S = 1.0 / (1.0 + 2.53e-6 * Re_tp**1.17)
+
+    # ── Forster-Zuber 핵비등 HTC ──
+    # h_nb = 0.00122 × [k_l^0.79 × cp_l^0.45 × ρ_l^0.49] /
+    #        [σ^0.5 × μ_l^0.29 × h_fg^0.24 × ρ_v^0.24] × ΔT_sat^0.24 × ΔP_sat^0.75
+    # ΔT_sat, ΔP_sat: wall superheat 관련 → q'' 의존적이지만 약함
+    # 근사: ΔT_sat ≈ q'' / h_l (벽면 과열도)
+    dT_sat = max(q_flux / (h_l * F + 1e-9), 0.1)
+    # dP_sat ≈ dT_sat × dP/dT|sat (Clausius-Clapeyron)
+    dPdT = h_fg * rho_v / (T_sat_K + 1e-9)  # 근사
+    dP_sat = max(dT_sat * dPdT, 1.0)
+
+    h_nb = 0.00122 * (k_l**0.79 * cp_l**0.45 * rho_l**0.49) / \
+           (sigma**0.5 * mu_l**0.29 * h_fg**0.24 * rho_v**0.24 + 1e-9) * \
+           dT_sat**0.24 * dP_sat**0.75
+
+    h_tp = F * h_l + S * h_nb
+    return max(h_tp, h_l)
+
+
 def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None,
-                         evap_corr='gungor_winterton'):
+                         evap_corr='chen'):
     """건도(x) 기반 냉매 HTC 자동 분기
 
     x < 0:    과냉 액체 → Gnielinski(liquid)
@@ -856,9 +916,10 @@ def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None,
     x > 1:    과열 증기 → Gnielinski(vapor)
     전이구간: 블렌딩
 
-    evap_corr: 'shah' | 'gungor_winterton' (default)
-      shah            — Shah(1982) chart correlation, h_lo 기준
-      gungor_winterton — Gungor & Winterton(1986), E×h_l + S×h_pool
+    evap_corr: 'chen' (default) | 'shah' | 'gungor_winterton'
+      chen              — Chen(1966), 대류비등 지배, 소구경에 적합
+      shah              — Shah(1982) chart correlation, h_lo 기준
+      gungor_winterton  — Gungor & Winterton(1986), 핵비등+대류비등
                          x>0.8에서 안정적, 수평 소구경 보정 포함
     """
     rf = ref.refrigerant
@@ -938,7 +999,10 @@ def refrigerant_htc_auto(spec, geo, ref, side, x, m_ref, Q_seg=None,
         Fr_l = G_ref**2 / (rho_l**2 * 9.81 * D)
 
         if side == 'evap':
-            if evap_corr == 'shah':
+            if evap_corr == 'chen':
+                # Chen (1966) — 대류비등 지배, 소구경 적합
+                h_2ph = chen_evap(D, G_ref, x_clip, q_flux, ref, T_sat_K)
+            elif evap_corr == 'shah':
                 Co = ((1-x_clip)/x_clip)**0.8 * (rho_v/rho_l)**0.5
                 N = Co if Fr_l >= 0.04 else Co * 0.38 * Fr_l**(-0.3)
                 psi_cb = 1.8 / max(N, 0.01)**0.8
@@ -1705,7 +1769,15 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
     # ── 상관식 자동 선택 ──
     corr = select_correlations(spec, geo, ref, side)
     if evap_corr == 'auto':
-        evap_corr = 'gungor_winterton' if 'gungor' in corr['ref_htc'] else 'shah'
+        cid = corr['ref_htc']
+        if 'chen' in cid:
+            evap_corr = 'chen'
+        elif 'kim_mudawar' in cid:
+            evap_corr = 'kim_mudawar'
+        elif 'gungor' in cid:
+            evap_corr = 'gungor_winterton'
+        else:
+            evap_corr = 'chen'
     Nr = getattr(spec, 'tube_rows', getattr(spec, 'n_slabs', 1))
     Nt = getattr(spec, 'tube_cols', 1)
     Nr = max(Nr, 1); Nt = max(Nt, 1)
