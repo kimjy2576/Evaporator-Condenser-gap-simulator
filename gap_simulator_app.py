@@ -284,9 +284,13 @@ with st.sidebar:
 
     with st.expander("🔬 코일 모델 설정", expanded=True):
         st.caption("Level 2 Tube-Segment 모델 (자동 상관식)")
-        l2_m_ref = st.number_input("냉매 유량 [kg/s]", 0.001, 0.1, 0.00458, format="%.5f", key='l2_m_ref')
+        l2_m_ref_kghr = st.number_input("냉매 유량 [kg/hr]", 0.5, 500.0, 16.5, format="%.1f", key='l2_m_ref_kghr')
         l2_x_in = st.number_input("입구 건도 x_in", 0.0, 1.0, 0.22, format="%.2f", key='l2_x_in')
-        l2_flow = st.selectbox("유동 배열", ['counter', 'parallel'], key='l2_flow')
+        col_fe, col_fc = st.columns(2)
+        with col_fe:
+            l2_flow_evap = st.selectbox("증발기 배열", ['counter', 'parallel'], key='l2_flow_evap')
+        with col_fc:
+            l2_flow_cond = st.selectbox("응축기 배열", ['counter', 'parallel'], key='l2_flow_cond')
         l2_evap_corr = st.selectbox("증발 상관식", ['auto', 'gungor_winterton', 'shah'], key='l2_corr')
         l2_nseg = st.slider("세그먼트/튜브", 3, 10, 5, key='l2_nseg')
 
@@ -393,22 +397,20 @@ def run_analysis(cfg):
     ua_e=compute_UA(evap,geo_e,ref,V_face,'evap'); ua_c=compute_UA(cond,geo_c,ref,V_face,'cond')
     et=f"{evap.fin_type.capitalize()} {evap.tube_layout[0].upper()}" if evap.hx_type=='FT' else 'MCHX'
     tag=f"{et} | {ref.refrigerant} | T_evap={ref.T_sat_evap}°C | CMM={gp.CMM} | {gp.gap_mode}"
+    _m_ref = st.session_state.get('l2_m_ref_kghr', 16.5) / 3600.0  # kg/hr → kg/s
+    _x_in = st.session_state.get('l2_x_in', 0.22)
+    _corr = st.session_state.get('l2_corr', 'auto')
+    _flow_e = st.session_state.get('l2_flow_evap', 'counter')
+    _flow_c = st.session_state.get('l2_flow_cond', 'counter')
+    _nseg = st.session_state.get('l2_nseg', 5)
     results_a=sweep(gaps,evap,cond,geo_e,geo_c,ua_e,ua_c,ref,gp,
-                    st.session_state.get('l2_m_ref',0.00458),
-                    st.session_state.get('l2_x_in',0.22),
-                    st.session_state.get('l2_corr','auto'),
-                    st.session_state.get('l2_flow','counter'),
-                    st.session_state.get('l2_nseg',5))
+                    _m_ref, _x_in, _corr, _flow_e, _nseg)
     case_b=dict(name=tag,T_in=gd['T_amb'],RH_in=gd['RH_in'],CMM=gd['CMM'],T_wall=ref.T_sat_evap,
         gap_mm=20,theta_deg=0,eta_coeff=5e-4,w_bridge=0.75,gap_mode=gd['gap_mode'],
         seal_fraction=gd.get('seal_fraction',0.7),hx_type=evap.hx_type,
         tube_layout=getattr(evap,'tube_layout','staggered'))
     result_b=analyze_combined(case_b,gaps,evap,geo_e,cond,geo_c,ua_e,ua_c,ref,
-                              st.session_state.get('l2_m_ref',0.00458),
-                              st.session_state.get('l2_x_in',0.22),
-                              st.session_state.get('l2_corr','auto'),
-                              st.session_state.get('l2_flow','counter'),
-                              st.session_state.get('l2_nseg',5))
+                              _m_ref, _x_in, _corr, _flow_e, _nseg)
     cp=compute_carry_penalty(result_b,evap,geo_e,gaps,ref.T_sat_cond); apply_carry_penalty(results_a,cp)
     inlet=InletCondition(T_in=gd['T_amb'],RH_in=gd['RH_in'],CMM=gd['CMM'],T_wall_evap=ref.T_sat_evap)
     result_c=sweep_dp(gaps,evap,cond,geo_e,geo_c,inlet)
@@ -423,7 +425,9 @@ def run_analysis(cfg):
         geo_e=geo_e,geo_c=geo_c,ua_e=ua_e,ua_c=ua_c,tag=tag,V_face=V_face,
         gap_d=gd,inlet=inlet,label=tag,
         corr_evap=select_correlations(evap,geo_e,ref,'evap'),
-        corr_cond=select_correlations(cond,geo_c,ref,'cond'))
+        corr_cond=select_correlations(cond,geo_c,ref,'cond'),
+        l2_flow_evap=_flow_e, l2_flow_cond=_flow_c,
+        l2_m_ref=_m_ref, l2_nseg=_nseg)
 
 def make_df(res):
     rows=[]
@@ -463,7 +467,9 @@ if 'results' in st.session_state and st.session_state.results:
     st.caption(f"**{tag}** | V={res['V_face']:.2f}m/s | UA_e={res['ua_e']['UA']:.1f}W/K | η_o={res['ua_e']['eta_o']:.3f}")
     ce=res.get('corr_evap',{})
     if ce:
-        st.caption(f"📋 상관식: j={ce.get('air_j','?')} | f={ce.get('air_f','?')} | h_i={ce.get('ref_htc','?')}")
+        st.caption(f"📋 상관식: j={ce.get('air_j','?')} | h_i={ce.get('ref_htc','?')} | "
+                   f"m_ref={res.get('l2_m_ref',0)*3600:.1f}kg/hr | "
+                   f"증발기:{res.get('l2_flow_evap','?')} 응축기:{res.get('l2_flow_cond','?')}")
 
     # 고화질 렌더링 함수
     def show_fig(fig, dpi=200):
