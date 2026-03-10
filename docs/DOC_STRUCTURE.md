@@ -156,10 +156,10 @@ Row별 분할: A_total/Nr, A_i/Nr, R_wall×Nr, UA/Nr (h_o, h_i, σ 동일)
 선택 로직:
 - 공기 j: HX type → Layout → Fin type → Pt/Pl 분기
 - 공기 f: Pt/Pl ≤ 1.35 → Wang(2000), > 1.35 → KYW(1999)
-- 냉매 증발: D_ch 기반 → Gungor-Winterton(1986) 기본
-- 냉매 응축: Shah(1979) 고정
+- 냉매 증발: D ≥ 3mm → Chen(1966), D < 3mm → Kim & Mudawar(2013)
+- 냉매 응축: D ≥ 3mm → Shah(1979), D < 3mm → Kim & Mudawar(2012)
 - 단상: Gnielinski(1976) 고정
-- 핀효율: FT → Schmidt, MCHX → 직선핀
+- 핀효율: FT → Schmidt (습면: T_fin_avg 반복), MCHX → 직선핀
 
 범위 밖 조건 시 warnings 배열에 경고 추가.
 
@@ -168,16 +168,16 @@ Row별 분할: A_total/Nr, A_i/Nr, R_wall×Nr, UA/Nr (h_o, h_i, σ 동일)
 
 `compute_coil_v3(spec, geo, ref, T_air, RH, V, m_ref, x_in, side, N_seg, flow, evap_corr)`
 
-**Tube-by-Tube × Segment (CoilDesigner 수준)**:
+**Tube-by-Tube × Segment**:
 
 ```
-16 tubes × 10 segments = 160 elements
+Nr×Nt×N_seg 세그먼트 개별 계산
 각 세그먼트에서:
-  ① h_i 계산 (건도 x 기반 자동 분기)
-  ② T_wall 반복 수렴 (Q_air = Q_ref, α=0.3)
-  ③ 습면/건면 판정 + Threlkeld ε-NTU
-  ④ 냉매 상태 업데이트 (x, T_ref)
-  ⑤ 공기 상태 업데이트 (Row간, 포화 보정)
+  ① h_i 계산 (건도 x 기반 자동 분기, Chen/Kim-Mudawar/G-W/Shah)
+  ② T_wall 반복 수렴 (Q_air = Q_ref, α=0.7, 12회)
+  ③ 습면 핀효율: b@T_fin_avg 반복 수렴 (3회)
+  ④ 냉매 상태: dx = Q/(m×h_fg), 과열 dT = Q/(m×cp_v)
+  ⑤ 공기 상태: 엔탈피 기반 T 역산 (Row간)
 ```
 
 **유동 배열**:

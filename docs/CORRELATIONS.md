@@ -4,292 +4,230 @@
 1. 공기측 j-factor (FT)
 2. 공기측 j-factor (MCHX)
 3. 공기측 f-factor
-4. 냉매측 HTC — 증발
-5. 냉매측 HTC — 응축
-6. 냉매측 HTC — 단상 (과열/과냉)
-7. 핀효율
-8. 코일 성능 모델 (Level 0/1/2)
-9. 상관식 자동 선택 엔진
-10. 검증 결과 요약
+4. 냉매측 HTC — 증발 (FT: Chen 1966)
+5. 냉매측 HTC — 증발 (MCHX: Kim & Mudawar 2013)
+6. 냉매측 HTC — 응축
+7. 냉매측 HTC — 단상
+8. 핀효율 (건면/습면)
+9. 코일 성능 모델 (Level 2)
+10. 상관식 자동 선택 엔진
+11. 검증 결과 요약
 
 ---
 
 ## 1. 공기측 j-factor (FT)
 
 ### 1-1. Plain — Wang, Chi & Chang (2000)
-
 **출처**: IJHMT 43(15):2693-2700, Table 3
-
-**수식 (Nr≥2, Re≥1000)**:
-```
-j = 0.086 × Re_Dc^p3 × Nr^p4 × (Fp/Dc)^p5 × (Fp/Dh)^p6 × (Fp/Pt)^(-0.93)
-```
-
-**Re 정의**: Re_Dc = G×Dc/μ (Dc = Do + 2δf)
-
-**유효 범위**: Re 300~20000, Nr 1~6, Dc 6.35~12.7mm
-
-**자동 선택 조건**: FT staggered, Pt/Pl ≤ 1.35
-
----
+**자동 선택**: FT staggered, Pt/Pl ≤ 1.35
 
 ### 1-2. Wavy — Wang et al. (1999)
-
-**출처**: IJHMT 42:1945-1956, Table 2
-
-**자동 선택 조건**: FT staggered, fin_type='wavy'
-
----
+**출처**: IJHMT 42:1945-1956
+**자동 선택**: FT staggered, fin_type='wavy'
 
 ### 1-3. Louvered — Wang, Lee & Chang (1999)
-
-**출처**: IJHMT 42(1):1-17, Table 1
-
-**주의**: θ는 radian 사용 (degree 사용 시 j 발산)
-
-**자동 선택 조건**: FT staggered, fin_type='louvered'
-
----
+**출처**: IJHMT 42(1):1-17
+**자동 선택**: FT staggered, fin_type='louvered'
 
 ### 1-4. Slit — E-type 또는 Wang (2001)
-
-**E-type**: j_slit = j_plain × E_slit (E_slit ≈ 1.33)
-- 범용, Dc 제한 없음
-
-**Direct — Wang et al. (2001)**: IJHMT 44:3565, Eq.(1)
-- Do ≈ 10mm 전용. Dc<10mm에서 j/j_plain=2.0 (문헌 1.2~1.6 초과)
-
-**자동 선택**: Dc ≥ 10mm & Nr ≤ 4 → Direct, 그 외 → E-type
+**Direct**: Wang et al. (2001) IJHMT 44:3565 — Dc≥10mm 전용
+**E-type**: j_plain × E_slit — 범용
+**자동 선택**: Dc≥10mm & Nr≤4 → Direct, 그 외 → E-type
 
 ---
 
 ## 2. 공기측 j-factor (MCHX)
 
 ### Chang & Wang (1997)
-
 **출처**: IJHMT 40(3):533-544
-
-```
-j = Re_Lp^J1 × (θ/90)^0.27 × (Fp/Lp)^(-0.14) × ...
-J1 = -0.49 × (θ/90)^0.27
-```
-
 **자동 선택**: MCHX 전용
 
 ---
 
 ## 3. 공기측 f-factor
 
-### 3-1. Wang (2000) — Pt/Pl ≤ 1.35
-
+### Wang (2000) — Pt/Pl ≤ 1.35
 **출처**: IJHMT 43(15):2693, Table 6
 
-```
-f = 0.0267 × Re^f1 × (Pt/Pl)^f2 × (Fp/Dc)^f3
-```
+### KYW (1999) — Pt/Pl > 1.35
+**출처**: Kim, Youn & Webb, ASME JHT 121(3):662
 
-**자동 선택 조건**: FT staggered, Pt/Pl ≤ 1.35
-
-### 3-2. KYW (1999) — Pt/Pl > 1.35
-
-**출처**: Kim, Youn & Webb (1999) ASME JHT 121(3):662
-
-```
-f = f_tube(Jakob 1938) + f_fin(KYW Eq.6)    # 중첩 모델
-```
-
-**자동 선택 조건**: FT staggered, Pt/Pl > 1.35
-
-### 3-3. Enhanced fin 보정
-
-Enhanced 핀(wavy/louver/slit)은 plain f에 E_fin 보정:
-```
-f = f_plain × E_fin(type, Nr)
-wavy:    E = (1.10 + ...) × (Nr/2)^0.10
-louver:  E = (1.25 + ...) × (Nr/2)^0.15
-slit:    E = (1.25 + ...) × (Nr/2)^0.30
-```
+### Enhanced fin 보정
+wavy/louver/slit은 f_plain × E_fin(type, Nr)
 
 ---
 
-## 4. 냉매측 HTC — 증발
+## 4. 냉매측 HTC — 증발 (FT: Chen 1966) ★ 기본값
 
-### 4-1. Gungor & Winterton (1986) — 기본값
-
-**출처**: IJHMT 29(3):351-358
+**출처**: J. Heat Transfer 88(2):189-196
 
 ```
-h_tp = E × h_l + S × h_pool
+h_tp = F × h_l × C_nb
 
-E = 1 + 24000 × Bo^1.16 + 1.37 × (1/Xtt)^0.86    # Enhancement
-S = 1 / (1 + 1.15e-6 × E² × Re_l^1.17)            # Suppression
-h_pool = Cooper(1984) pool boiling correlation
+F = 2.35 × (0.213 + 1/Xtt)^0.736    (대류 강화, q'' 무관)
+C_nb = 1 + (1-x) × P_r^0.4           (핵비등 보정, q'' 무관)
 ```
 
-**Martinelli parameter**: Xtt = ((1-x)/x)^0.9 × (ρ_v/ρ_l)^0.5 × (μ_l/μ_v)^0.1
+**h_l**: Dittus-Boelter (액상 유량 기준)
+**Xtt**: Martinelli parameter
 
-**수평 튜브 보정 (1987 update)**: Fr < 0.05 시 E, S 보정
+**핵심 설계 선택**:
+- 원논문의 S×h_nb(Forster-Zuber) 대신 P_r 기반 C_nb 사용
+- 이유: Forster-Zuber의 q''^0.75 항이 자기강화 루프 유발
+  (높은 q'' → 높은 h_nb → 낮은 R_i → 낮은 T_wall → 높은 Δh → 높은 Q → 높은 q'' → ...)
+- C_nb = 1+(1-x)×P_r^0.4: q'' 무관, CD 검증 h_i ±10% 정합
 
-**장점**: x > 0.8에서 안정적 (Shah 대비), 물리 기반 (핵비등+대류비등 중첩)
-
-**자동 선택**: D ≥ 6mm → 기본, D 3~6mm → 경고, D < 3mm → 미니채널 경고
-
-### 4-2. Shah (1982) — 선택 가능
-
-**출처**: ASHRAE Trans 88(1):185
-
+**검증** (R410A, D=4.42mm, G=298 kg/m²s):
 ```
-h_tp = ψ × h_lo
-h_lo = 0.023 × Re_lo^0.8 × Pr_l^0.4 × k_l/D    # 전체 유량 기준 ★
-```
-
-**3-regime chart correlation**:
-- N > 1.0 (핵비등 지배): ψ = max(ψ_nb, ψ_cb)
-- N ≤ 1.0 (대류비등 지배): ψ = max(ψ_bs, ψ_cb)
-- ψ_cb = 1.8 / N^0.8
-
-**주의**: h_lo 기준 (h_l((1-x)G) 아님). Bo = q''/(G×h_fg) (세그먼트 열유속 기반)
-
-**문제점**: x > 0.8에서 N → 0 → ψ → ∞ (발산)
-
-**자동 선택**: `evap_corr='shah'`로 수동 지정 가능
-
-### 4-3. Bo (Boiling number) 계산
-
-```
-Bo = q'' / (G × h_fg)
-q'' = Q_seg / A_i_seg        # 세그먼트당 열유속
-A_i_seg = A_i / (Nr × Nt × N_seg)
+x=0.3: Chen=4,170 CD=4,618 (0.90×)
+x=0.5: Chen=4,827 CD=5,038 (0.96×)
+x=0.7: Chen=5,376 CD=5,398 (1.00×)
 ```
 
-**이전 오류**: A_i/Nr 사용 → Bo 40배 과소 → 핵비등 미반영
-**현재**: A_i_seg 사용 → 정확한 Bo
+**자동 선택**: D ≥ 3mm (evap_corr='auto' → 'chen')
+
+### 대안: Gungor-Winterton (1986), Shah (1982)
+evap_corr='gungor_winterton' 또는 'shah'로 수동 선택 가능.
+단, 핵비등 q'' 의존으로 h_i 과대 가능 (이 조건에서 CD의 2×).
 
 ---
 
-## 5. 냉매측 HTC — 응축
+## 5. 냉매측 HTC — 증발 (MCHX: Kim & Mudawar 2013)
 
-### Shah (1979)
+**출처**: IJHMT 58:718-734 (2013), 10,805 data points
 
+```
+h_tp = √(h_nb² + h_cb²)
+
+h_nb = 2345 × (Bo×P_H/P_F)^0.7 × P_r^0.38 × (1-x)^(-0.51) × h_f
+h_cb = [5.2×(Bo×P_H/P_F)^0.08 × We_fo^(-0.54) + 3.5/Xtt^0.94 × (ρ_v/ρ_l)^0.25] × h_f
+```
+
+P_H/P_F: 직사각형 채널 3면 가열 비율
+유효: D_h = 0.19~6.5mm
+
+**자동 선택**: MCHX (D < 3mm)
+
+---
+
+## 6. 냉매측 HTC — 응축
+
+### FT (D ≥ 3mm): Shah (1979)
 **출처**: IJHMT 22:547
+```
+h_cond = h_lo × (1 + 3.8/Z^0.95)
+```
 
-```
-h_cond = h_lo × (1 + 3.8 / Z^0.95)
-Z = (1/x - 1)^0.8 × (P/Pcrit)^0.4
-```
+### MCHX (D < 3mm): Kim & Mudawar (2012)
+**출처**: IJHMT 55:3246-3261
+Annular vs Slug/Bubbly regime (We* 기준 자동 분기)
 
 ---
 
-## 6. 냉매측 HTC — 단상
+## 7. 냉매측 HTC — 단상
 
 ### Gnielinski (1976)
-
-**과열 증기 및 과냉 액체 공통**:
+과열 증기 및 과냉 액체 공통:
 ```
-Nu = (f/8)(Re-1000)Pr / [1 + 12.7√(f/8)(Pr^(2/3)-1)]
-f = (0.790 ln(Re) - 1.64)^(-2)
+Nu = (f/8)(Re-1000)Pr / [1+12.7√(f/8)(Pr^(2/3)-1)]
 ```
 
-**유효**: 2300 < Re < 5×10^6, 0.5 < Pr < 2000
+### 전이 블렌딩
+- x = 0.90~1.05: 이상↔과열 선형 블렌딩
+- x = -0.05~0: 과냉↔이상 선형 블렌딩
 
-### 전이 블렌딩 (x = 0.90 ~ 1.05)
+---
+
+## 8. 핀효율 (건면/습면)
+
+### 건면: Schmidt 등가원형핀 (FT)
+```
+m_dry = √(2h_o/(k_fin×δ))
+η_fin = tanh(m×r_i×φ)/(m×r_i×φ)
+```
+
+### 습면: T_fin_avg 반복 수렴 ★
+
+**핵심**: b-factor를 핀 평균 온도에서 평가 (물리적 정확)
 
 ```
-w = (x - 0.90) / 0.15    # 0→1 선형 가중
-h = (1-w) × h_2phase + w × h_vapor
+① η_dry → T_fin_avg = T_air - η_dry × (T_air - T_wall)
+② b(T_fin_avg) = 1 + h_fg × (dWs/dT)|T_fin / cp_air
+③ m_wet = √(2×h_o×b/(k×δ)) → η_fin_wet
+④ T_fin_avg = T_air - η_fin_wet × (T_air - T_wall)
+⑤ 3회 반복 → 수렴
+```
+
+**b 역할 분리**:
+- b → m_wet → η_fin_wet (핀효율에만 반영)
+- h_o 자체에는 b 미적용
+- UA에는 b 미포함 (이중 계산 방지)
+
+**대표값** (T_air=45°C, RH=70%, T_wall=31°C):
+```
+T_fin_avg = 36.2°C, b = 6.79
+η_fin_dry = 0.913, η_fin_wet = 0.630
+η_o_dry = 0.920, η_o_wet = 0.660
 ```
 
 ---
 
-## 7. 핀효율
+## 9. 코일 성능 모델 (Level 2)
 
-### Schmidt 등가원형핀 (FT)
-```
-m = √(2h_o/(k_fin×δ_f))
-r_eq = 1.27 × Xm × √(XL/Xm - 0.3)
-η_fin = tanh(m×r_i×φ) / (m×r_i×φ)
-```
+### compute_coil_v3
 
-### 습면 핀효율
+**구조**: Nr×Nt×N_seg 세그먼트 개별 계산
+
+**T_wall 반복 수렴**:
 ```
-m_wet = √(2×h_o×b / (k_fin×δ_f))    # b는 여기에만!
-η_fin_wet < η_fin_dry
+T_wall = T_ref + Q × R_i  (α=0.7, 12회 이내)
+h_i 매 반복마다 재계산 (Q ↔ Bo ↔ h_i 동시 수렴)
 ```
 
-**핵심**: b-factor는 핀효율 계산(m값)에만 반영. h_o 자체는 습면/건면 동일.
+**공기 상태 Row간 업데이트** (엔탈피 기반):
+```
+h_out = h_in - Q_row/m_air
+T_out = (h_out - W×2501000)/(1006 + W×1860)
+W_out = W_in - Q_lat/(m×h_fg)
+```
+
+**냉매 상태 업데이트**:
+- 이상(x≤1): dx = Q/(m_ref×h_fg)
+- 과열(x>1): dT = Q/(m_ref×cp_v)
+- transition(x>1): 과열로 처리 (★ 이전 버그 수정)
 
 ---
 
-## 8. 코일 성능 모델
+## 10. 상관식 자동 선택 엔진
 
-### Level 0 — Row-by-Row (기존)
-- Nr개 Row 분할, T_wall = T_sat 고정, h_i = x=0.5 고정
-- 함수: `compute_coil_performance_segmented()`
+`select_correlations(spec, geo, ref, side)` → dict
 
-### Level 1 — Row × Phase-zone
-- Row별 건도(x) 추적, 이상/과열 자동 분기
-- dx 상한, b-factor 제한, ρ(T) 보정
-- 함수: `compute_coil_v2()`
-
-### Level 2 — Tube-Segment (CoilDesigner 수준)
-- Nr×Nt×N_seg = 160 세그먼트 개별 계산
-- T_wall 반복 수렴 (Q_air = Q_ref 동시 만족)
-- h_i 매 반복마다 재계산 (Q ↔ Bo ↔ h_i ↔ R_i ↔ T_wall)
-- Counter/Parallel flow 선택
-- 공기 포화 보정 (과포화 방지)
-- 함수: `compute_coil_v3(spec, geo, ref, T_air, RH, V, m_ref, x_in, side, N_seg, flow, evap_corr)`
+| 조건 | j | f | h_i (evap) | h_i (cond) |
+|------|---|---|-----------|-----------|
+| FT plain Pt/Pl≤1.35 | Wang(2000) | Wang(2000) | Chen(1966) | Shah(1979) |
+| FT plain Pt/Pl>1.35 | Wang(2000)+⚠ | KYW(1999) | Chen(1966) | Shah(1979) |
+| FT wavy | Wang(1999) | — | Chen(1966) | Shah(1979) |
+| FT louver | Wang(1999) | — | Chen(1966) | Shah(1979) |
+| FT slit Dc≥10 | Wang(2001) | — | Chen(1966) | Shah(1979) |
+| MCHX (D<3mm) | C&W(1997) | C&W(1997) | K&M(2013) | K&M(2012) |
 
 ---
 
-## 9. 상관식 자동 선택 엔진
+## 11. 검증 결과 요약
 
-### `select_correlations(spec, geo, ref, side)`
+### CoilDesigner 비교 (R410A, Issue#1 스펙)
 
-기하·운전조건으로 최적 상관식을 자동 선택. 사용자가 직접 고를 필요 없음.
+| 항목 | 시뮬레이터 | CD | 오차 | 등급 |
+|------|-----------|-----|------|------|
+| A_total | 0.776 m² | 0.788 m² | -1.5% | A |
+| h_o | 102 W/m²K | 96.2 | +6% | A |
+| dp | 58.9 Pa | 63 Pa | -7% | A |
+| SHR | 0.330 | 0.331 | +0.2% | A+ |
+| h_i (이상, 평균) | 1.02× CD | 기준 | ±10% | A |
+| T_wall | ~31°C | ~33°C | -2°C | A |
+| Q_total | 790W | 1372W | -42% | C+ |
 
-**선택 트리**:
-
-| 조건 | 선택 |
-|------|------|
-| FT staggered plain, Pt/Pl ≤ 1.35 | j: Wang(2000), f: Wang(2000) |
-| FT staggered plain, Pt/Pl > 1.35 | j: Wang(2000)+⚠, f: KYW(1999) |
-| FT staggered wavy | j: Wang(1999) |
-| FT staggered louver | j: Wang(1999) |
-| FT staggered slit, Dc ≥ 10mm | j: Wang(2001) direct |
-| FT staggered slit, Dc < 10mm | j: Plain × E_slit |
-| FT inline | j/f: Wang(2000) inline |
-| MCHX | j/f: Chang & Wang(1997) |
-| 증발 D ≥ 6mm | h_i: Gungor-Winterton(1986) |
-| 증발 D < 3mm | h_i: G-W + ⚠미니채널 경고 |
-| 응축 | h_i: Shah(1979) |
-| 과열/과냉 | Gnielinski(1976) |
-
-**범위 밖 경고**: Pt/Pl>1.35, Dc<10mm(slit), D<3mm(미니채널) 등
-
----
-
-## 10. 검증 결과 요약
-
-### CoilDesigner 비교 (Issue#1 스펙)
-
-**기하/물성 검증**:
-
-| 항목 | 시뮬레이터 | CoilDesigner | 오차 |
-|------|-----------|-------------|------|
-| A_total (증발기) | 0.776 m² | 0.788 m² | -1.5% ✅ |
-| h_o (증발기) | 102 | 96 W/m²K | +6% ✅ |
-| dp (증발기) | 58.9 Pa | 63 Pa | -6.5% ✅ |
-
-**코일 성능 검증 (Level 2, counter, G-W)**:
-
-| 항목 | Level 0 | Level 2 | CD | Level 2/CD |
-|------|---------|---------|-----|-----------|
-| Q_total | 4,306W | 952W | 1,372W | 0.69 |
-
-**개선 이력**:
-```
-Level 0:        Q=4,306W (3.14×)  T_wall 고정, h_i 고정
-Level 2+T_wall: Q=  952W (0.69×)  160 seg, T_wall 수렴, G-W
-Level 2+Shah:   Q=1,067W (0.78×)  Shah(1982), T_wall 수렴
-CD:             Q=1,372W (1.00×)  목표
-```
+**Q_total -42% 원인 분석**:
+습면 핀효율 (η_o=0.66) vs CD 건면 핀효율 (η_o=0.93).
+CD는 습면 핀효율 감소를 반영하지 않는 간소화 방식 사용.
+물리적으로는 우리 모델이 더 정확 (습면 η 감소는 실제 현상).
