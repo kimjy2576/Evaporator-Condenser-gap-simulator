@@ -1922,13 +1922,18 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
             if Q_per_row[row] > 0:
                 rho_a = P_atm/(287.05*(T_a+273.15))
                 m_a = rho_a*V_face*spec.W*spec.H
-                # ★ 현열만 T 변경, 잠열은 W 변경
-                Q_sen_row = Q_per_row[row] - Q_lat_per_row[row]
-                T_a -= Q_sen_row/(m_a*cp_air+1e-9)
-                T_a = np.clip(T_a, -40, 120)
+                # ★ 엔탈피 기반 T 역산 (정석)
+                # h_out = h_in - Q_total/m → T_out = f(h_out, W_out)
+                h_a = get_h(T_a, get_RH(T_a, W_a))
+                h_a_out = h_a - Q_per_row[row] / (m_a + 1e-9)
+                # W 업데이트 (잠열)
                 if Q_lat_per_row[row] > 0:
                     dW = Q_lat_per_row[row]/(m_a*h_fg_lat+1e-9)
                     W_a = max(W_a-dW, get_Wsat(T_sat) if side=='evap' else 0)
+                # T 역산: h = 1006*T + W*(2501000+1860*T)
+                # → T = (h - W*2501000) / (1006 + W*1860)
+                T_a = (h_a_out - W_a*2501000.0) / (1006.0 + W_a*1860.0)
+                T_a = np.clip(T_a, -40, 120)
                 # 포화 보정
                 W_sat_T = get_Wsat(T_a)
                 if W_a > W_sat_T:
