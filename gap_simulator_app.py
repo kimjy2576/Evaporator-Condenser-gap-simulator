@@ -42,6 +42,8 @@ from visualize import (make_single_fig_a, make_single_fig_b, make_single_fig_c,
 
 st.set_page_config(page_title="Gap Simulator", page_icon="❄️", layout="wide")
 
+_APP_VERSION = "v7.9-L2"  # Level 2 통합 + Q_net fix
+
 # ═══════════════════════════════════════════════════════════
 #  비밀번호 보호
 # ═══════════════════════════════════════════════════════════
@@ -73,6 +75,7 @@ if not check_password():
     st.stop()
 
 st.title("❄️ 증발기-응축기 간격 통합 시뮬레이터")
+st.caption(f"🔬 Level 2 Tube-Segment | {_APP_VERSION}")
 
 # ═══════════════════════════════════════════════════════════
 #  JSON → session_state
