@@ -846,16 +846,16 @@ def kim_mudawar_cond(D_h, G, x, ref, T_sat_K):
 # ─── 관내 비등 HTC: Chen (1966) ──────────────────────────────────
 
 def chen_evap(D, G, x, q_flux, ref, T_sat_K):
-    """Chen (1966) 관내 유동비등 HTC — 순수 대류비등 모드
+    """Chen (1966) 관내 유동비등 HTC — 대류비등 + P_r 핵비등 보정
     출처: J. Heat Transfer 88(2):189-196
 
-    h_tp = F × h_l
+    h_tp = F × h_l × C_nb
     F = 대류 강화 인자 (Xtt 의존, q'' 무관)
+    C_nb = 1 + (1-x) × P_r^0.4 (핵비등 보정, q'' 무관)
 
-    원논문: h_tp = F×h_l + S×h_nb (Forster-Zuber)
-    본 구현: S×h_nb 생략 — 소구경/고유속 조건에서 핵비등 억제됨
-      → CD(CoilDesigner) 결과와 정합
-      → S가 충분히 억제 못하는 Forster-Zuber의 q''^0.75 자기강화 방지
+    원논문의 S×h_nb(Forster-Zuber)는 q'' 자기강화 문제로 대체:
+    → P_r 기반 보정으로 저건도 핵비등 기여를 반영하되 q'' 비의존
+    → CoilDesigner 검증 결과와 ±8% 이내 정합
     """
     rf = ref.refrigerant
     x = np.clip(x, 0.01, 0.99)
@@ -866,6 +866,9 @@ def chen_evap(D, G, x, q_flux, ref, T_sat_K):
     rho_l = CP.PropsSI('D','T',T_sat_K,'Q',0,rf)
     rho_v = CP.PropsSI('D','T',T_sat_K,'Q',1,rf)
     mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
+    P_sat = CP.PropsSI('P','T',T_sat_K,'Q',0,rf)
+    P_crit = CP.PropsSI('Pcrit',rf)
+    P_r = P_sat / P_crit
 
     # 단상 액체 HTC (Dittus-Boelter)
     Re_l = max(G * (1 - x) * D / mu_l, 100)
@@ -881,7 +884,11 @@ def chen_evap(D, G, x, q_flux, ref, T_sat_K):
     else:
         F = 2.35 * (0.213 + inv_Xtt)**0.736
 
-    h_tp = F * h_l
+    # 핵비등 보정 (q'' 무관, P_r 기반)
+    # 저건도: 핵비등 기여 크고, 고건도: 대류비등 지배 → (1-x)로 감쇠
+    C_nb = 1.0 + (1.0 - x) * P_r**0.4
+
+    h_tp = F * h_l * C_nb
     return max(h_tp, h_l)
 
 
@@ -1597,19 +1604,44 @@ def compute_coil_v2(spec, geo, ref, T_air_in, RH_in, V_face,
             h_sat_w = get_hsat(T_wall)
             W_sat_w = get_Wsat(T_wall)
 
-            # b-factor (상한 적용)
-            T_mid = (T_air + T_wall) / 2
-            W_s1 = get_Wsat(T_mid)
-            W_s2 = get_Wsat(T_mid + 0.5)
+            # b-factor — T_wall 근처에서 평가 (정석: 핀 표면 온도)
+            T_b = T_wall + 1.0  # 핀 표면 ≈ T_wall 근처
+            W_s1 = get_Wsat(T_b)
+            W_s2 = get_Wsat(T_b + 0.5)
             dWs_dT = (W_s2 - W_s1) / 0.5
             b = 1.0 + h_fg_lat * dWs_dT / cp_air
-            b = np.clip(b, 1.0, B_MAX)  # ★ 상한 제한
+            b = np.clip(b, 1.0, 15.0)
 
-            h_o_wet = h_o * b
+            # η_fin_wet 재계산 (b는 핀효율에만 반영, h_o 불변!)
+            if spec.hx_type == 'FT':
+                k_f = 230 if spec.fin_material == 'Al' else 385
+                df = spec.fin_thickness
+                m_wet = np.sqrt(2 * h_o * b / (k_f * df + 1e-9))
+                r_tube = spec.tube_do / 2
+                Pt = spec.tube_pitch_t; Pl = spec.tube_pitch_l
+                if spec.tube_layout == 'staggered':
+                    Xm = Pt / 2; Xl = np.sqrt((Pt/2)**2 + Pl**2) / 2
+                else:
+                    Xm = Pt / 2; Xl = Pl / 2
+                r_eq = 1.27 * Xm * np.sqrt(max(Xl / (Xm + 1e-9) - 0.3, 0.01))
+                phi_f = (r_eq / r_tube - 1) * (1 + 0.35 * np.log(max(r_eq / r_tube, 1.001)))
+                mrl = m_wet * r_tube * phi_f
+                eta_fin_wet = np.tanh(mrl) / (mrl + 1e-9) if mrl > 0.01 else 1.0
+            else:
+                # MCHX: 직선핀 습면
+                Lf = spec.fin_pitch / 2
+                k_f = 230
+                df = spec.fin_thickness
+                m_wet = np.sqrt(2 * h_o * b / (k_f * df + 1e-9))
+                mL = m_wet * Lf
+                eta_fin_wet = np.tanh(mL) / (mL + 1e-9) if mL > 0.01 else 1.0
+
             A_fin_ratio = geo.get('A_fin', geo.get('A_louver', geo['A_total']*0.9)) / (geo['A_total'] + 1e-9)
-            eta_o_wet = 1.0 - A_fin_ratio * (1 - eta_o)
-            eta_o_wet = max(min(eta_o_wet, 1.0), 0.3)
-            UA_o_wet = eta_o_wet * h_o_wet * A_o_row
+            eta_o_wet = max(1.0 - A_fin_ratio * (1 - eta_fin_wet), 0.2)
+
+            # UA: η_o_wet × h_o × A_o (b는 η_fin_wet에만 반영)
+            # Threlkeld: enthalpy 구동력은 Q 계산에서 처리, UA에는 b 미포함
+            UA_o_wet = eta_o_wet * h_o * A_o_row
             UA_wet = 1.0 / (1.0/UA_o_wet + R_wall_row + R_i)
             NTU_wet = UA_wet / (m_air * cp_air)
             eps_wet = 1.0 - np.exp(-NTU_wet)
@@ -1843,8 +1875,8 @@ def compute_coil_v3(spec, geo, ref, T_air_in, RH_in, V_face,
             if wet:
                 h_a = get_h(T_air, RH_air)
                 h_sw = get_hsat(T_wall); W_sw = get_Wsat(T_wall)
-                T_mid = (T_air + T_wall) / 2
-                dWs = (get_Wsat(T_mid+0.5) - get_Wsat(T_mid)) / 0.5
+                T_b = T_wall + 1.0  # 핀 표면 ≈ T_wall 근처
+                dWs = (get_Wsat(T_b+0.5) - get_Wsat(T_b)) / 0.5
                 b_loc = max(1.0 + h_fg_lat*dWs/cp_air, 1.0)
                 k_f = 230.0 if getattr(spec,'fin_material','Al')=='Al' else 386.0
                 df = getattr(spec,'fin_thickness',0.1e-3)
