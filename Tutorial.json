@@ -14,8 +14,8 @@
     "A_frame": 1.0
   },
   "sim": {
-    "gap_min": 0,
-    "gap_max": 50,
+    "gap_min": 5,
+    "gap_max": 100,
     "gap_points": 25
   },
   "evap": {
@@ -39,7 +39,7 @@
   },
   "cond": {
     "hx_type": "FT",
-    "W": 0.241,
+    "W": 0.24,
     "H": 0.056,
     "D": 0.06,
     "fpi": 22,
