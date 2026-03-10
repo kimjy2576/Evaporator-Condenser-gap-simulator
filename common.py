@@ -846,15 +846,16 @@ def kim_mudawar_cond(D_h, G, x, ref, T_sat_K):
 # ─── 관내 비등 HTC: Chen (1966) ──────────────────────────────────
 
 def chen_evap(D, G, x, q_flux, ref, T_sat_K):
-    """Chen (1966) 관내 유동비등 HTC
+    """Chen (1966) 관내 유동비등 HTC — 순수 대류비등 모드
     출처: J. Heat Transfer 88(2):189-196
 
-    h_tp = F × h_l + S × h_nb
+    h_tp = F × h_l
     F = 대류 강화 인자 (Xtt 의존, q'' 무관)
-    S = 핵비등 억제 인자 (Re_tp 의존)
-    h_nb = Forster-Zuber 핵비등
 
-    대류비등 지배 조건 (소구경, 고 G)에서 S→0 → h_tp ≈ F×h_l
+    원논문: h_tp = F×h_l + S×h_nb (Forster-Zuber)
+    본 구현: S×h_nb 생략 — 소구경/고유속 조건에서 핵비등 억제됨
+      → CD(CoilDesigner) 결과와 정합
+      → S가 충분히 억제 못하는 Forster-Zuber의 q''^0.75 자기강화 방지
     """
     rf = ref.refrigerant
     x = np.clip(x, 0.01, 0.99)
@@ -862,48 +863,25 @@ def chen_evap(D, G, x, q_flux, ref, T_sat_K):
     mu_l = CP.PropsSI('V','T',T_sat_K,'Q',0,rf)
     k_l  = CP.PropsSI('L','T',T_sat_K,'Q',0,rf)
     Pr_l = CP.PropsSI('Prandtl','T',T_sat_K,'Q',0,rf)
-    cp_l = CP.PropsSI('C','T',T_sat_K,'Q',0,rf)
     rho_l = CP.PropsSI('D','T',T_sat_K,'Q',0,rf)
     rho_v = CP.PropsSI('D','T',T_sat_K,'Q',1,rf)
     mu_v = CP.PropsSI('V','T',T_sat_K,'Q',1,rf)
-    sigma = CP.PropsSI('I','T',T_sat_K,'Q',0,rf)
-    h_fg = CP.PropsSI('H','T',T_sat_K,'Q',1,rf) - CP.PropsSI('H','T',T_sat_K,'Q',0,rf)
-    P_sat = CP.PropsSI('P','T',T_sat_K,'Q',0,rf)
 
-    # ── 단상 액체 HTC (Dittus-Boelter) ──
+    # 단상 액체 HTC (Dittus-Boelter)
     Re_l = max(G * (1 - x) * D / mu_l, 100)
     h_l = 0.023 * max(Re_l, 2300)**0.8 * Pr_l**0.4 * k_l / D
 
-    # ── Martinelli parameter ──
+    # Martinelli parameter
     Xtt = ((1-x)/x)**0.9 * (rho_v/rho_l)**0.5 * (mu_l/mu_v)**0.1
     inv_Xtt = 1.0 / max(Xtt, 0.001)
 
-    # ── F factor (대류 강화) ──
-    # F = 1 for 1/Xtt ≤ 0.1, else 2.35×(0.213 + 1/Xtt)^0.736
+    # F factor (대류 강화) — q'' 무관
     if inv_Xtt <= 0.1:
         F = 1.0
     else:
         F = 2.35 * (0.213 + inv_Xtt)**0.736
 
-    # ── S factor (핵비등 억제) ──
-    Re_tp = Re_l * F**1.25
-    S = 1.0 / (1.0 + 2.53e-6 * Re_tp**1.17)
-
-    # ── Forster-Zuber 핵비등 HTC ──
-    # h_nb = 0.00122 × [k_l^0.79 × cp_l^0.45 × ρ_l^0.49] /
-    #        [σ^0.5 × μ_l^0.29 × h_fg^0.24 × ρ_v^0.24] × ΔT_sat^0.24 × ΔP_sat^0.75
-    # ΔT_sat, ΔP_sat: wall superheat 관련 → q'' 의존적이지만 약함
-    # 근사: ΔT_sat ≈ q'' / h_l (벽면 과열도)
-    dT_sat = max(q_flux / (h_l * F + 1e-9), 0.1)
-    # dP_sat ≈ dT_sat × dP/dT|sat (Clausius-Clapeyron)
-    dPdT = h_fg * rho_v / (T_sat_K + 1e-9)  # 근사
-    dP_sat = max(dT_sat * dPdT, 1.0)
-
-    h_nb = 0.00122 * (k_l**0.79 * cp_l**0.45 * rho_l**0.49) / \
-           (sigma**0.5 * mu_l**0.29 * h_fg**0.24 * rho_v**0.24 + 1e-9) * \
-           dT_sat**0.24 * dP_sat**0.75
-
-    h_tp = F * h_l + S * h_nb
+    h_tp = F * h_l
     return max(h_tp, h_l)
 
 
