@@ -42,7 +42,7 @@ from visualize import (make_single_fig_a, make_single_fig_b, make_single_fig_c,
 
 st.set_page_config(page_title="Gap Simulator", page_icon="❄️", layout="wide")
 
-_APP_VERSION = "v7.9-L2"  # Level 2 통합 + Q_net fix
+_APP_VERSION = "v7.9.1-L2"  # Level 2 통합 + Q_net fix
 
 # ═══════════════════════════════════════════════════════════
 #  비밀번호 보호
